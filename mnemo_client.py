@@ -266,6 +266,12 @@ class MnemoClient:
         self._raise_for_status(resp)
         return resp.json()
 
+    async def resolve_address(self, address: str) -> str:
+        """Resolve agent address to agent UUID string. Raises MnemoNotFoundError if not found."""
+        resp = await self.http.get(f"/v1/agents/resolve/{address}")
+        self._raise_for_status(resp)
+        return resp.json()["agent_id"]
+
     # ── Power-User Atom Operations ─────────────────────────────────────────────
 
     async def store_atom(
@@ -409,6 +415,34 @@ class MnemoClient:
                 "expand_graph": expand_graph,
                 "expansion_depth": expansion_depth,
             },
+        )
+        self._raise_for_status(resp)
+        return resp.json()
+
+    async def recall_all_shared(
+        self,
+        agent_id: UUID,
+        query: str,
+        from_agent: str | None = None,
+        min_similarity: float = 0.15,
+        max_results: int = 5,
+        verbosity: str = "summary",
+        max_total_tokens: int | None = None,
+    ) -> dict:
+        """Recall across all shared views (cross-view endpoint)."""
+        body: dict = {
+            "query": query,
+            "min_similarity": min_similarity,
+            "max_results": max_results,
+            "verbosity": verbosity,
+        }
+        if from_agent:
+            body["from_agent"] = from_agent
+        if max_total_tokens is not None:
+            body["max_total_tokens"] = max_total_tokens
+        resp = await self.http.post(
+            f"/v1/agents/{_uid(agent_id)}/shared_views/recall",
+            json=body,
         )
         self._raise_for_status(resp)
         return resp.json()
