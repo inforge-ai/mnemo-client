@@ -13,7 +13,7 @@ Usage:
                  "From now on I should always specify dtype explicitly.",
             domain_tags=["python", "pandas"],
         )
-        # result: RememberResult {atoms_created: 3, edges_created: 2, duplicates_merged: 0}
+        # result: RememberResult {status: "queued", store_id: "uuid"}
 
         results = await client.recall(
             agent_id=agent["id"],
@@ -72,9 +72,8 @@ class MnemoServerError(MnemoError):
 # ── Typed response shapes ──────────────────────────────────────────────────────
 
 class RememberResult(TypedDict):
-    atoms_created: int
-    edges_created: int
-    duplicates_merged: int
+    status: str
+    store_id: str
 
 
 class Atom(TypedDict):
@@ -180,7 +179,6 @@ class MnemoClient:
         self,
         agent_id: UUID,
         query: str,
-        atom_types: Optional[list[str]] = None,
         domain_tags: Optional[list[str]] = None,
         min_confidence: float = 0.1,
         min_similarity: float = 0.2,
@@ -195,7 +193,6 @@ class MnemoClient:
         """Retrieve relevant memories by semantic search."""
         body: dict = {
             "query": query,
-            "atom_types": atom_types,
             "domain_tags": domain_tags,
             "min_confidence": min_confidence,
             "min_similarity": min_similarity,
