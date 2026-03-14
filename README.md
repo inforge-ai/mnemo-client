@@ -1,22 +1,31 @@
-# mnemo-client
+# mnemo-ai
 
-Lightweight async Python client for the [Mnemo](https://mnemo.ai) API — persistent memory for AI agents.
-
-## Requirements
-
-- Python >= 3.12
-- `httpx >= 0.26.0`
+Persistent memory for AI agents — async Python client library + MCP server.
 
 ## Installation
 
+### Client library only
+
 ```bash
-pip install mnemo-client
+pip install mnemo-ai
 ```
 
 Or with [uv](https://github.com/astral-sh/uv):
 
 ```bash
-uv add mnemo-client
+uv add mnemo-ai
+```
+
+### With MCP server (for Claude Desktop, etc.)
+
+```bash
+pip install "mnemo-ai[mcp]"
+```
+
+Or with uv:
+
+```bash
+uv add "mnemo-ai[mcp]"
 ```
 
 ## Quick Start
@@ -24,7 +33,7 @@ uv add mnemo-client
 ### Async (recommended)
 
 ```python
-from mnemo_client import MnemoClient
+from mnemo.client import MnemoClient
 
 async with MnemoClient(api_key="your-key") as client:
     # Register an agent
@@ -42,7 +51,6 @@ async with MnemoClient(api_key="your-key") as client:
              "From now on I should always specify dtype explicitly.",
         domain_tags=["python", "pandas"],
     )
-    # result: {"atoms_created": 3, "edges_created": 2, "duplicates_merged": 0}
 
     # Retrieve relevant memories
     results = await client.recall(
@@ -56,7 +64,7 @@ async with MnemoClient(api_key="your-key") as client:
 For non-async contexts (scripts, sync agent loops, WebSocket handlers):
 
 ```python
-from mnemo_client import MnemoClientSync
+from mnemo.client import MnemoClientSync
 
 client = MnemoClientSync(api_key="your-key", agent_id="your-uuid")
 
@@ -67,9 +75,52 @@ stats = client.stats()
 
 `MnemoClientSync` safely handles the case where an event loop is already running by offloading work to a worker thread.
 
+## MCP Server for Claude Desktop
+
+Add to your Claude Desktop configuration (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "mnemo": {
+      "command": "uvx",
+      "args": ["mnemo-ai[mcp]"],
+      "env": {
+        "MNEMO_API_KEY": "your-api-key",
+        "MNEMO_BASE_URL": "https://your-mnemo-server.com",
+        "MNEMO_DEFAULT_AGENT_ID": "your-agent-uuid"
+      }
+    }
+  }
+}
+```
+
+### Environment variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `MNEMO_API_KEY` | Yes | API key for authentication |
+| `MNEMO_BASE_URL` | Yes | URL of the Mnemo server |
+| `MNEMO_DEFAULT_AGENT_ID` | No | Default agent UUID (so tools work without specifying agent_id) |
+| `MNEMO_MCP_TRANSPORT` | No | Transport type: `stdio` (default), `sse`, or `streamable-http` |
+
+### MCP tools
+
+The server exposes 6 tools: `mnemo_remember`, `mnemo_recall`, `mnemo_stats`, `mnemo_share`, `mnemo_list_shared`, `mnemo_recall_shared`.
+
+### Running manually
+
+```bash
+# Via console script
+mnemo-mcp
+
+# Via Python module
+python -m mnemo.mcp
+```
+
 ## API Reference
 
-### `MnemoClient(api_key, base_url="https://api.mnemo.ai")`
+### `MnemoClient(api_key, base_url)`
 
 Async client. Use as an async context manager or call `.close()` manually.
 
@@ -123,7 +174,7 @@ Async client. Use as an async context manager or call `.close()` manually.
 |---|---|
 | `health()` | Check API health. |
 
-### `MnemoClientSync(api_key, agent_id, base_url="https://api.mnemo.ai")`
+### `MnemoClientSync(api_key, agent_id, base_url)`
 
 Synchronous wrapper. Exposes `remember`, `recall`, and `stats` with the same signatures as the async client.
 
@@ -144,4 +195,4 @@ Synchronous wrapper. Exposes `remember`, `recall`, and `stats` with the same sig
 
 ## License
 
-See [mnemo.ai](https://mnemo.ai) for terms and API key registration.
+Apache 2.0 — see [LICENSE](LICENSE) for details.
