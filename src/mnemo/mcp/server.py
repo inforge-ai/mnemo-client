@@ -127,8 +127,9 @@ INSTRUCTIONS = (
     "Mnemo Memory Server — store and retrieve persistent memories for AI agents. "
     "Use mnemo_remember to save information, mnemo_recall to search it, "
     "mnemo_share to share memories with other agents, "
-    "mnemo_list_shared to see what's been shared with you, "
-    "and mnemo_recall_shared to search shared memories."
+    "mnemo_list_shared to see what's been shared with you (or direction='outbound' for your shares), "
+    "mnemo_recall_shared to search shared memories, "
+    "and mnemo_revoke_share to revoke a shared view."
 )
 
 mcp_server = FastMCP(
@@ -404,13 +405,74 @@ async def mnemo_share(
 
 
 @mcp_server.tool(
-    description="List all memory views shared with this agent by other agents.",
+    description=(
+        "Revoke a previously shared memory view. Removes the recipient "
+        "agent's ability to query this shared view. The underlying "
+        "memories are not affected."
+    ),
 )
-async def mnemo_list_shared(
+async def mnemo_revoke_share(
+    capability_id: str,
     agent_id: str | None = None,
 ) -> str:
     """
     Args:
+        capability_id: The capability ID to revoke. Get this from
+            mnemo_list_shared(direction="outbound") or the original
+            mnemo_share response.
+        agent_id: UUID of the revoking agent. Optional if default configured.
+    """
+    try:
+        agent_uuid = _resolve_agent_id(agent_id)
+    except ValueError as exc:
+        return f"Error: {exc}"
+
+    try:
+        cap_uuid = UUID(capability_id)
+    except (ValueError, AttributeError):
+        return f"Error: invalid capability_id format: {capability_id!r}"
+
+    client = _get_client()
+
+    try:
+        result = await client.revoke_shared_view(
+            agent_id=agent_uuid, capability_id=cap_uuid
+        )
+    except MnemoNotFoundError:
+        return "Capability not found, or you are not the grantor of this share."
+    except MnemoAuthError:
+        return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not owned by this operator"
+    except ConnectionError:
+        return "Error: cannot reach Mnemo server"
+    except Exception as exc:
+        logger.exception("mnemo_revoke_share failed")
+        return f"Error: {exc}"
+
+    if result.get("was_already_revoked"):
+        return f"This share was already revoked on {result['revoked_at']}."
+
+    return (
+        f"Shared view revoked.\n"
+        f"- View: {result['view_id']}\n"
+        f"- Recipient: {result['grantee_id']}\n"
+        f"- Revoked at: {result['revoked_at']}"
+    )
+
+
+@mcp_server.tool(
+    description=(
+        "List shared memory views. Use direction='inbound' (default) to see "
+        "views shared with you, or direction='outbound' to see views you've "
+        "shared with others (includes capability IDs for revocation)."
+    ),
+)
+async def mnemo_list_shared(
+    direction: str = "inbound",
+    agent_id: str | None = None,
+) -> str:
+    """
+    Args:
+        direction: "inbound" (shared with me) or "outbound" (shared by me).
         agent_id: UUID of the agent. Optional if default configured.
     """
     try:
@@ -420,6 +482,32 @@ async def mnemo_list_shared(
 
     client = _get_client()
 
+    if direction == "outbound":
+        try:
+            caps = await client.list_outbound_capabilities(agent_id=agent_uuid)
+        except MnemoNotFoundError:
+            return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not found"
+        except MnemoAuthError:
+            return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not owned by this operator"
+        except Exception as exc:
+            logger.exception("mnemo_list_shared outbound failed")
+            return f"Error: {exc}"
+
+        if not caps:
+            return "No outbound shares."
+
+        lines = ["Outbound shares:\n"]
+        for cap in caps:
+            grantee = cap.get("grantee_address") or cap.get("grantee_id", "unknown")
+            status = "revoked" if cap.get("revoked") else "active"
+            lines.append(
+                f"- '{cap.get('view_name', 'unnamed')}' → {grantee}\n"
+                f"  Capability: {cap['capability_id']}\n"
+                f"  Granted: {cap.get('granted_at', '?')} | Status: {status}"
+            )
+        return "\n\n".join(lines)
+
+    # Default: inbound
     try:
         shared_views = await client.list_shared_views(agent_id=agent_uuid)
     except MnemoNotFoundError:

@@ -14,6 +14,7 @@ from mnemo.mcp.server import (
     mnemo_recall,
     mnemo_recall_shared,
     mnemo_remember,
+    mnemo_revoke_share,
     mnemo_share,
     mnemo_stats,
 )
@@ -668,3 +669,123 @@ class TestRecallShared:
         agent_id = str(uuid4())
         result = await mnemo_recall_shared(query="test", agent_id=agent_id)
         assert "Error" in result
+
+
+# ── mnemo_revoke_share tests ───────────────────────────────────────────
+
+
+class TestRevokeShare:
+    """Tests for the mnemo_revoke_share tool."""
+
+    async def test_revoke_success(self, mock_client, with_default_agent):
+        cap_id = str(uuid4())
+        view_id = str(uuid4())
+        grantee_id = str(uuid4())
+        mock_client.revoke_shared_view.return_value = {
+            "capability_id": cap_id,
+            "view_id": view_id,
+            "grantee_id": grantee_id,
+            "revoked": True,
+            "revoked_at": "2026-03-14T12:00:00Z",
+            "was_already_revoked": False,
+        }
+        result = await mnemo_revoke_share(capability_id=cap_id)
+        assert "Shared view revoked" in result
+        assert view_id in result
+        assert grantee_id in result
+        assert "2026-03-14" in result
+
+    async def test_revoke_already_revoked(self, mock_client, with_default_agent):
+        cap_id = str(uuid4())
+        mock_client.revoke_shared_view.return_value = {
+            "capability_id": cap_id,
+            "view_id": str(uuid4()),
+            "grantee_id": str(uuid4()),
+            "revoked": True,
+            "revoked_at": "2026-03-13T10:00:00Z",
+            "was_already_revoked": True,
+        }
+        result = await mnemo_revoke_share(capability_id=cap_id)
+        assert "already revoked" in result
+        assert "2026-03-13" in result
+
+    async def test_revoke_not_found(self, mock_client, with_default_agent):
+        mock_client.revoke_shared_view.side_effect = MnemoNotFoundError("not found")
+        cap_id = str(uuid4())
+        result = await mnemo_revoke_share(capability_id=cap_id)
+        assert "not found" in result or "not the grantor" in result
+
+    async def test_revoke_auth_error(self, mock_client, with_default_agent):
+        mock_client.revoke_shared_view.side_effect = MnemoAuthError("denied")
+        cap_id = str(uuid4())
+        result = await mnemo_revoke_share(capability_id=cap_id)
+        assert "not owned" in result
+
+    async def test_revoke_default_agent(self, mock_client, with_default_agent):
+        cap_id = str(uuid4())
+        mock_client.revoke_shared_view.return_value = {
+            "capability_id": cap_id,
+            "view_id": str(uuid4()),
+            "grantee_id": str(uuid4()),
+            "revoked": True,
+            "revoked_at": "2026-03-14T12:00:00Z",
+            "was_already_revoked": False,
+        }
+        await mnemo_revoke_share(capability_id=cap_id)
+        call_kwargs = mock_client.revoke_shared_view.call_args.kwargs
+        assert str(call_kwargs["agent_id"]) == VALID_AGENT_ID
+
+    async def test_revoke_invalid_capability_id(self, mock_client, with_default_agent):
+        result = await mnemo_revoke_share(capability_id="not-a-uuid")
+        assert "invalid capability_id" in result
+
+
+# ── mnemo_list_shared outbound tests ───────────────────────────────────
+
+
+class TestListSharedOutbound:
+    """Tests for mnemo_list_shared with direction='outbound'."""
+
+    async def test_outbound_empty(self, mock_client, with_default_agent):
+        mock_client.list_outbound_capabilities.return_value = []
+        result = await mnemo_list_shared(direction="outbound")
+        assert "No outbound shares" in result
+
+    async def test_outbound_success(self, mock_client, with_default_agent):
+        cap_id = str(uuid4())
+        mock_client.list_outbound_capabilities.return_value = [
+            {
+                "capability_id": cap_id,
+                "view_id": str(uuid4()),
+                "view_name": "python-tips",
+                "grantee_id": str(uuid4()),
+                "grantee_address": "bob:org",
+                "permissions": ["read"],
+                "revoked": False,
+                "revoked_at": None,
+                "granted_at": "2026-03-12T10:00:00Z",
+            },
+        ]
+        result = await mnemo_list_shared(direction="outbound")
+        assert "python-tips" in result
+        assert "bob:org" in result
+        assert cap_id in result
+        assert "active" in result
+
+    async def test_outbound_revoked_status(self, mock_client, with_default_agent):
+        mock_client.list_outbound_capabilities.return_value = [
+            {
+                "capability_id": str(uuid4()),
+                "view_id": str(uuid4()),
+                "view_name": "old-share",
+                "grantee_id": str(uuid4()),
+                "grantee_address": "alice:org",
+                "permissions": ["read"],
+                "revoked": True,
+                "revoked_at": "2026-03-13T10:00:00Z",
+                "granted_at": "2026-03-10T10:00:00Z",
+            },
+        ]
+        result = await mnemo_list_shared(direction="outbound")
+        assert "revoked" in result
+        assert "old-share" in result

@@ -387,6 +387,23 @@ class MnemoClient:
         self._raise_for_status(resp)
         return resp.json()
 
+    async def revoke_shared_view(
+        self, agent_id: UUID, capability_id: UUID
+    ) -> dict:
+        resp = await self.http.post(
+            f"/v1/agents/{_uid(agent_id)}/capabilities/{_uid(capability_id)}/revoke"
+        )
+        self._raise_for_status(resp)
+        return resp.json()
+
+    async def list_outbound_capabilities(self, agent_id: UUID) -> list[dict]:
+        resp = await self.http.get(
+            f"/v1/agents/{_uid(agent_id)}/capabilities",
+            params={"direction": "outbound"},
+        )
+        self._raise_for_status(resp)
+        return resp.json()
+
     async def list_shared_views(self, agent_id: UUID) -> list[dict]:
         resp = await self.http.get(f"/v1/agents/{_uid(agent_id)}/shared_views")
         self._raise_for_status(resp)
