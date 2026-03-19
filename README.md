@@ -106,7 +106,9 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
 
 ### MCP tools
 
-The server exposes 6 tools: `mnemo_remember`, `mnemo_recall`, `mnemo_stats`, `mnemo_share`, `mnemo_list_shared`, `mnemo_recall_shared`.
+The server exposes 7 tools: `mnemo_remember`, `mnemo_recall`, `mnemo_stats`, `mnemo_share`, `mnemo_list_shared`, `mnemo_recall_shared`, `mnemo_revoke_share`.
+
+`mnemo_list_shared` displays a `[trusted]` or `[UNTRUSTED]` label per view based on the server's trust auth layer. Trust is managed by operators via the server CLI, not through MCP tools.
 
 ### Running manually
 
@@ -165,7 +167,7 @@ Async client. Use as an async context manager or call `.close()` manually.
 |---|---|
 | `grant(agent_id, view_id, grantee_id, permissions=None, expires_at=None)` | Grant another agent access to a view. |
 | `revoke(capability_id)` | Revoke a previously granted capability. |
-| `list_shared_views(agent_id)` | List views shared with this agent. |
+| `list_shared_views(agent_id)` | List views shared with this agent. Returns `trusted` boolean per view. |
 | `recall_shared(agent_id, view_id, query, ...)` | Recall memories scoped to a shared view. |
 
 #### Other

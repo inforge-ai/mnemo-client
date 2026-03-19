@@ -524,8 +524,9 @@ async def mnemo_list_shared(
     lines = []
     for view in shared_views:
         source = view.get("source_address") or view.get("grantor_id", "unknown")
+        trust_label = "trusted" if view.get("trusted") else "UNTRUSTED"
         lines.append(
-            f"- '{view['name']}' from {source}\n"
+            f"- '{view['name']}' from {source} [{trust_label}]\n"
             f"  {view.get('description', 'No description')}\n"
             f"  Atoms: {view.get('atom_count', '?')} | "
             f"Granted: {view.get('granted_at', '?')}"
