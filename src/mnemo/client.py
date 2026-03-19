@@ -166,11 +166,21 @@ class MnemoClient:
         agent_id: UUID,
         text: str,
         domain_tags: Optional[list[str]] = None,
+        remembered_on: Optional[str] = None,
     ) -> RememberResult:
-        """Store a memory. Just say what happened. Server decomposes and links."""
+        """Store a memory. Just say what happened. Server decomposes and links.
+
+        Args:
+            remembered_on: ISO-8601 datetime string for when the memory occurred.
+                Used to resolve relative time references (e.g. "yesterday").
+                Defaults to server time if not provided.
+        """
+        body: dict = {"text": text, "domain_tags": domain_tags or []}
+        if remembered_on is not None:
+            body["remembered_on"] = remembered_on
         resp = await self.http.post(
             f"/v1/agents/{_uid(agent_id)}/remember",
-            json={"text": text, "domain_tags": domain_tags or []},
+            json=body,
         )
         self._raise_for_status(resp)
         return resp.json()
@@ -502,10 +512,14 @@ class MnemoClientSync:
             return asyncio.run(coro)
 
     def remember(self, text: str,
-                 domain_tags: list[str] | None = None) -> RememberResult:
+                 domain_tags: list[str] | None = None,
+                 remembered_on: str | None = None) -> RememberResult:
         async def _():
             async with MnemoClient(self._base_url, self._api_key) as c:
-                return await c.remember(self._agent_id, text, domain_tags)
+                return await c.remember(
+                    self._agent_id, text, domain_tags,
+                    remembered_on=remembered_on,
+                )
         return self._run(_())
 
     def recall(self, query: str, **kwargs) -> RecallResult:

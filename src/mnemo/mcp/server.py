@@ -155,6 +155,7 @@ async def mnemo_remember(
     text: str,
     agent_id: str | None = None,
     domain_tags: list[str] | None = None,
+    remembered_on: str | None = None,
 ) -> str:
     """
     Args:
@@ -163,6 +164,9 @@ async def mnemo_remember(
         agent_id: UUID of the agent storing the memory. Optional
                   if MNEMO_DEFAULT_AGENT_ID is configured.
         domain_tags: Optional topic tags (e.g. ["python", "debugging"]).
+        remembered_on: ISO-8601 datetime for when this memory occurred.
+            Used to resolve relative time references like "yesterday"
+            or "last week". Defaults to now if omitted.
     """
     try:
         agent_uuid = _resolve_agent_id(agent_id)
@@ -176,6 +180,7 @@ async def mnemo_remember(
             agent_id=agent_uuid,
             text=text,
             domain_tags=domain_tags or [],
+            remembered_on=remembered_on,
         )
     except MnemoNotFoundError:
         return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not found"
