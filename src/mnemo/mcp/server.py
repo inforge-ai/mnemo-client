@@ -18,7 +18,8 @@ logger = logging.getLogger("mnemo-mcp")
 # ── Configuration (from environment) ──────────────────────────────────────────
 
 BASE_URL: str = os.environ.get("MNEMO_BASE_URL", "")
-API_KEY: str = os.environ.get("MNEMO_API_KEY", "")
+# RBAC-Lite: read MNEMO_AGENT_KEY (preferred) with fallback to legacy MNEMO_API_KEY
+AGENT_KEY: str = os.environ.get("MNEMO_AGENT_KEY", "") or os.environ.get("MNEMO_API_KEY", "")
 DEFAULT_AGENT_ID: str | None = os.environ.get("MNEMO_DEFAULT_AGENT_ID") or None
 MCP_TRANSPORT: str = os.environ.get("MNEMO_MCP_TRANSPORT", "stdio")
 MCP_HOST: str = os.environ.get("MNEMO_MCP_HOST", "0.0.0.0")
@@ -59,22 +60,17 @@ def _resolve_agent_id(agent_id: str | None) -> UUID:
 
 async def _validate_startup() -> MnemoClient:
     """Validate configuration and connectivity, returning a ready client."""
-    if not API_KEY:
-        logger.error("MNEMO_API_KEY is not set. Cannot start.")
+    if not AGENT_KEY:
+        logger.error(
+            "MNEMO_AGENT_KEY is not set (or legacy MNEMO_API_KEY). Cannot start."
+        )
         sys.exit(1)
 
     if not BASE_URL:
         logger.error("MNEMO_BASE_URL is not set. Cannot start.")
         sys.exit(1)
 
-    client = MnemoClient(BASE_URL, api_key=API_KEY)
-
-    try:
-        operator_info = await client.me()
-    except MnemoAuthError:
-        logger.error("API key is invalid or expired. Cannot start.")
-        await client.close()
-        sys.exit(1)
+    client = MnemoClient(BASE_URL, agent_key=AGENT_KEY)
 
     if DEFAULT_AGENT_ID is not None:
         # Validate UUID format
@@ -85,23 +81,24 @@ async def _validate_startup() -> MnemoClient:
             await client.close()
             sys.exit(1)
 
+        # Validate agent is accessible using stats endpoint (agent-level)
         try:
-            await client.get_agent(agent_uuid)
+            await client.stats(agent_uuid)
         except (MnemoNotFoundError, MnemoAuthError) as exc:
             logger.error("Default agent %s is not accessible: %s", DEFAULT_AGENT_ID, exc)
             await client.close()
             sys.exit(1)
 
-        logger.info(
-            "Operator: %s | Default agent: %s",
-            operator_info.get("name", operator_info.get("id", "unknown")),
-            DEFAULT_AGENT_ID,
-        )
+        logger.info("Agent key validated | Default agent: %s", DEFAULT_AGENT_ID)
     else:
-        logger.info(
-            "Operator: %s | No default agent",
-            operator_info.get("name", operator_info.get("id", "unknown")),
-        )
+        # No default agent — just verify the key works with a health check
+        try:
+            await client.health()
+        except Exception as exc:
+            logger.error("Cannot reach Mnemo server: %s", exc)
+            await client.close()
+            sys.exit(1)
+        logger.info("Agent key provided | No default agent")
 
     return client
 

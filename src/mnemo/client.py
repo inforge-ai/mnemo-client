@@ -1,40 +1,26 @@
 """
 Lightweight async Python client for the Mnemo API.
 
-Usage:
-    async with MnemoClient(api_key="your-key") as client:
-        agent = await client.register_agent("my-agent",
-            persona="python developer", domain_tags=["python"])
+Usage (agent operations — remember, recall, share, stats):
+    async with MnemoClient(agent_key="mnemo_ag_...") as client:
+        result = await client.remember(agent_id=..., text="...")
+        results = await client.recall(agent_id=..., query="...")
 
-        result = await client.remember(
-            agent_id=agent["id"],
-            text="pandas.read_csv silently coerces mixed-type columns. "
-                 "I discovered this processing client_data.csv. "
-                 "From now on I should always specify dtype explicitly.",
-            domain_tags=["python", "pandas"],
-        )
-        # result: RememberResult {status: "queued", store_id: "uuid"}
+Usage (operator operations — register agent, inspect shares, block):
+    async with MnemoClient(operator_key="mnemo_op_...") as client:
+        agent = await client.register_agent("my-agent")
+        shares = await client.inspect_shares()
 
-        results = await client.recall(
-            agent_id=agent["id"],
-            query="loading CSV files with pandas",
-        )
-
-        view = await client.create_view(
-            agent_id=agent["id"],
-            name="pandas-csv-handling",
-            atom_filter={"atom_types": ["procedural"], "domain_tags": ["pandas"]},
-        )
-        skill = await client.export_skill(agent_id=agent["id"], view_id=view["id"])
-
-        cap = await client.grant(
-            agent_id=agent["id"],
-            view_id=view["id"],
-            grantee_id=other_agent["id"],
-        )
+Usage (both planes in one client):
+    async with MnemoClient(
+        agent_key="mnemo_ag_...",
+        operator_key="mnemo_op_...",
+    ) as client:
+        agent = await client.register_agent("my-agent")
+        await client.remember(agent_id=agent["id"], text="...")
 
 Sync usage:
-    client = MnemoClientSync(api_key="your-key", agent_id="your-uuid")
+    client = MnemoClientSync(agent_key="mnemo_ag_...", agent_id="your-uuid")
     client.remember("pandas.read_csv coerces mixed types")
     results = client.recall("loading CSV files")
 """
@@ -116,29 +102,72 @@ def _uid(v) -> str:
 # ── Async client ───────────────────────────────────────────────────────────────
 
 class MnemoClient:
-    def __init__(self, base_url: str = "https://api.mnemo.ai",
-                 api_key: Optional[str] = None):
-        if not api_key:
+    def __init__(
+        self,
+        base_url: str = "https://api.mnemo-ai.com",
+        agent_key: Optional[str] = None,
+        operator_key: Optional[str] = None,
+        # Legacy support: api_key maps to operator_key
+        api_key: Optional[str] = None,
+    ):
+        if api_key and not operator_key:
+            operator_key = api_key
+        if not agent_key and not operator_key:
             raise ValueError(
-                "api_key is required. Get yours at https://mnemo.ai"
+                "At least one of agent_key or operator_key is required. "
+                "Use agent_key for data-plane ops (remember, recall, share). "
+                "Use operator_key for management ops (register agent, inspect shares)."
             )
         self.base_url = base_url.rstrip("/")
-        self.api_key = api_key
-        self._http: httpx.AsyncClient | None = None
+        self.agent_key = agent_key
+        self.operator_key = operator_key
+        self._agent_http: httpx.AsyncClient | None = None
+        self._operator_http: httpx.AsyncClient | None = None
+
+    @property
+    def _agent_client(self) -> httpx.AsyncClient:
+        """HTTP client with X-Agent-Key header for data-plane operations."""
+        if not self.agent_key:
+            raise MnemoAuthError(
+                "This operation requires an agent key. "
+                "Pass agent_key= to MnemoClient."
+            )
+        if self._agent_http is None or self._agent_http.is_closed:
+            self._agent_http = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=30.0,
+                headers={"X-Agent-Key": self.agent_key},
+            )
+        return self._agent_http
+
+    @property
+    def _operator_client(self) -> httpx.AsyncClient:
+        """HTTP client with X-Operator-Key header for management-plane operations."""
+        if not self.operator_key:
+            raise MnemoAuthError(
+                "This operation requires an operator key. "
+                "Pass operator_key= to MnemoClient."
+            )
+        if self._operator_http is None or self._operator_http.is_closed:
+            self._operator_http = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=30.0,
+                headers={"X-Operator-Key": self.operator_key},
+            )
+        return self._operator_http
 
     @property
     def http(self) -> httpx.AsyncClient:
-        if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(
-                base_url=self.base_url,
-                timeout=30.0,
-                headers={"Authorization": f"Bearer {self.api_key}"},
-            )
-        return self._http
+        """Legacy property — returns agent client if available, otherwise operator."""
+        if self.agent_key:
+            return self._agent_client
+        return self._operator_client
 
     async def close(self):
-        if self._http and not self._http.is_closed:
-            await self._http.aclose()
+        if self._agent_http and not self._agent_http.is_closed:
+            await self._agent_http.aclose()
+        if self._operator_http and not self._operator_http.is_closed:
+            await self._operator_http.aclose()
 
     async def __aenter__(self):
         return self
@@ -159,7 +188,7 @@ class MnemoClient:
             )
         resp.raise_for_status()
 
-    # ── Primary Interface ──────────────────────────────────────────────────────
+    # ── Primary Interface (agent key) ─────────────────────────────────────────
 
     async def remember(
         self,
@@ -168,17 +197,11 @@ class MnemoClient:
         domain_tags: Optional[list[str]] = None,
         remembered_on: Optional[str] = None,
     ) -> RememberResult:
-        """Store a memory. Just say what happened. Server decomposes and links.
-
-        Args:
-            remembered_on: ISO-8601 datetime string for when the memory occurred.
-                Used to resolve relative time references (e.g. "yesterday").
-                Defaults to server time if not provided.
-        """
+        """Store a memory. Just say what happened. Server decomposes and links."""
         body: dict = {"text": text, "domain_tags": domain_tags or []}
         if remembered_on is not None:
             body["remembered_on"] = remembered_on
-        resp = await self.http.post(
+        resp = await self._agent_client.post(
             f"/v1/agents/{_uid(agent_id)}/remember",
             json=body,
         )
@@ -217,14 +240,14 @@ class MnemoClient:
             body["verbosity"] = verbosity
         if max_total_tokens is not None:
             body["max_total_tokens"] = max_total_tokens
-        resp = await self.http.post(
+        resp = await self._agent_client.post(
             f"/v1/agents/{_uid(agent_id)}/recall",
             json=body,
         )
         self._raise_for_status(resp)
         return resp.json()
 
-    # ── Agent Management ───────────────────────────────────────────────────────
+    # ── Agent Management (operator key) ───────────────────────────────────────
 
     async def register_agent(
         self,
@@ -233,7 +256,7 @@ class MnemoClient:
         domain_tags: Optional[list[str]] = None,
         metadata: Optional[dict] = None,
     ) -> dict:
-        resp = await self.http.post(
+        resp = await self._operator_client.post(
             "/v1/agents",
             json={
                 "name": name,
@@ -246,40 +269,43 @@ class MnemoClient:
         return resp.json()
 
     async def me(self) -> dict:
-        """GET /v1/auth/me — returns current agent info (requires api_key)."""
-        resp = await self.http.get("/v1/auth/me")
+        """GET /v1/auth/me — returns current operator info."""
+        resp = await self._operator_client.get("/v1/auth/me")
         self._raise_for_status(resp)
         return resp.json()
 
     async def find_agent_by_name(self, name: str) -> list[dict]:
         """Return active agents with this exact name (empty list if none found)."""
-        resp = await self.http.get("/v1/agents", params={"name": name})
+        resp = await self._operator_client.get("/v1/agents", params={"name": name})
         self._raise_for_status(resp)
         return resp.json()
 
     async def get_agent(self, agent_id: UUID) -> dict:
-        resp = await self.http.get(f"/v1/agents/{_uid(agent_id)}")
+        # get_agent is a read-only lookup, use whichever client is available
+        client = self._agent_client if self.agent_key else self._operator_client
+        resp = await client.get(f"/v1/agents/{_uid(agent_id)}")
         self._raise_for_status(resp)
         return resp.json()
 
     async def stats(self, agent_id: UUID) -> AgentStats:
-        resp = await self.http.get(f"/v1/agents/{_uid(agent_id)}/stats")
+        resp = await self._agent_client.get(f"/v1/agents/{_uid(agent_id)}/stats")
         self._raise_for_status(resp)
         return resp.json()
 
     async def depart(self, agent_id: UUID) -> dict:
-        """Initiate agent departure. Cascade-revokes all granted capabilities."""
-        resp = await self.http.post(f"/v1/agents/{_uid(agent_id)}/depart")
+        """Initiate agent departure (admin only in RBAC-Lite)."""
+        resp = await self._operator_client.post(f"/v1/agents/{_uid(agent_id)}/depart")
         self._raise_for_status(resp)
         return resp.json()
 
     async def resolve_address(self, address: str) -> str:
-        """Resolve agent address to agent UUID string. Raises MnemoNotFoundError if not found."""
-        resp = await self.http.get(f"/v1/agents/resolve/{address}")
+        """Resolve agent address to agent UUID string."""
+        client = self._agent_client if self.agent_key else self._operator_client
+        resp = await client.get(f"/v1/agents/resolve/{address}")
         self._raise_for_status(resp)
         return resp.json()["agent_id"]
 
-    # ── Power-User Atom Operations ─────────────────────────────────────────────
+    # ── Power-User Atom Operations (agent key) ────────────────────────────────
 
     async def store_atom(
         self,
@@ -292,7 +318,7 @@ class MnemoClient:
         domain_tags: Optional[list[str]] = None,
     ) -> dict:
         """Explicit atom creation (power-user interface)."""
-        resp = await self.http.post(
+        resp = await self._agent_client.post(
             f"/v1/agents/{_uid(agent_id)}/atoms",
             json={
                 "atom_type": atom_type,
@@ -307,14 +333,14 @@ class MnemoClient:
         return resp.json()
 
     async def get_atom(self, agent_id: UUID, atom_id: UUID) -> dict:
-        resp = await self.http.get(
+        resp = await self._agent_client.get(
             f"/v1/agents/{_uid(agent_id)}/atoms/{_uid(atom_id)}"
         )
         self._raise_for_status(resp)
         return resp.json()
 
     async def delete_atom(self, agent_id: UUID, atom_id: UUID) -> None:
-        resp = await self.http.delete(
+        resp = await self._agent_client.delete(
             f"/v1/agents/{_uid(agent_id)}/atoms/{_uid(atom_id)}"
         )
         self._raise_for_status(resp)
@@ -328,7 +354,7 @@ class MnemoClient:
         weight: float = 1.0,
     ) -> dict:
         """Create a typed edge between two atoms."""
-        resp = await self.http.post(
+        resp = await self._agent_client.post(
             f"/v1/agents/{_uid(agent_id)}/atoms/link",
             json={
                 "source_id": _uid(source_id),
@@ -340,7 +366,7 @@ class MnemoClient:
         self._raise_for_status(resp)
         return resp.json()
 
-    # ── View Operations ────────────────────────────────────────────────────────
+    # ── View Operations (agent key) ───────────────────────────────────────────
 
     async def create_view(
         self,
@@ -349,7 +375,7 @@ class MnemoClient:
         atom_filter: dict,
         description: Optional[str] = None,
     ) -> dict:
-        resp = await self.http.post(
+        resp = await self._agent_client.post(
             f"/v1/agents/{_uid(agent_id)}/views",
             json={"name": name, "description": description, "atom_filter": atom_filter},
         )
@@ -357,18 +383,18 @@ class MnemoClient:
         return resp.json()
 
     async def list_views(self, agent_id: UUID) -> list[dict]:
-        resp = await self.http.get(f"/v1/agents/{_uid(agent_id)}/views")
+        resp = await self._agent_client.get(f"/v1/agents/{_uid(agent_id)}/views")
         self._raise_for_status(resp)
         return resp.json()
 
     async def export_skill(self, agent_id: UUID, view_id: UUID) -> dict:
-        resp = await self.http.get(
+        resp = await self._agent_client.get(
             f"/v1/agents/{_uid(agent_id)}/views/{_uid(view_id)}/export_skill"
         )
         self._raise_for_status(resp)
         return resp.json()
 
-    # ── Capability Operations ──────────────────────────────────────────────────
+    # ── Capability Operations (agent key) ─────────────────────────────────────
 
     async def grant(
         self,
@@ -378,7 +404,7 @@ class MnemoClient:
         permissions: Optional[list[str]] = None,
         expires_at: Optional[str] = None,
     ) -> dict:
-        resp = await self.http.post(
+        resp = await self._agent_client.post(
             f"/v1/agents/{_uid(agent_id)}/grant",
             json={
                 "view_id": _uid(view_id),
@@ -391,7 +417,7 @@ class MnemoClient:
         return resp.json()
 
     async def revoke(self, capability_id: UUID) -> dict:
-        resp = await self.http.post(
+        resp = await self._agent_client.post(
             f"/v1/capabilities/{_uid(capability_id)}/revoke"
         )
         self._raise_for_status(resp)
@@ -400,14 +426,14 @@ class MnemoClient:
     async def revoke_shared_view(
         self, agent_id: UUID, capability_id: UUID
     ) -> dict:
-        resp = await self.http.post(
+        resp = await self._agent_client.post(
             f"/v1/agents/{_uid(agent_id)}/capabilities/{_uid(capability_id)}/revoke"
         )
         self._raise_for_status(resp)
         return resp.json()
 
     async def list_outbound_capabilities(self, agent_id: UUID) -> list[dict]:
-        resp = await self.http.get(
+        resp = await self._agent_client.get(
             f"/v1/agents/{_uid(agent_id)}/capabilities",
             params={"direction": "outbound"},
         )
@@ -415,7 +441,7 @@ class MnemoClient:
         return resp.json()
 
     async def list_shared_views(self, agent_id: UUID) -> list[dict]:
-        resp = await self.http.get(f"/v1/agents/{_uid(agent_id)}/shared_views")
+        resp = await self._agent_client.get(f"/v1/agents/{_uid(agent_id)}/shared_views")
         self._raise_for_status(resp)
         return resp.json()
 
@@ -430,7 +456,7 @@ class MnemoClient:
         expansion_depth: int = 2,
     ) -> dict:
         """Recall through a shared view (scope-bounded to snapshot atoms)."""
-        resp = await self.http.post(
+        resp = await self._agent_client.post(
             f"/v1/agents/{_uid(agent_id)}/shared_views/{_uid(view_id)}/recall",
             json={
                 "query": query,
@@ -464,9 +490,33 @@ class MnemoClient:
             body["from_agent"] = from_agent
         if max_total_tokens is not None:
             body["max_total_tokens"] = max_total_tokens
-        resp = await self.http.post(
+        resp = await self._agent_client.post(
             f"/v1/agents/{_uid(agent_id)}/shared_views/recall",
             json=body,
+        )
+        self._raise_for_status(resp)
+        return resp.json()
+
+    # ── Operator Share Management (operator key) ──────────────────────────────
+
+    async def inspect_shares(self) -> dict:
+        """List all inbound and outbound shares for this operator's agents."""
+        resp = await self._operator_client.get("/v1/operators/me/shares")
+        self._raise_for_status(resp)
+        return resp.json()
+
+    async def block_share(self, capability_id: str) -> dict:
+        """Block an inbound share to one of this operator's agents."""
+        resp = await self._operator_client.post(
+            f"/v1/shares/{capability_id}/block"
+        )
+        self._raise_for_status(resp)
+        return resp.json()
+
+    async def unblock_share(self, capability_id: str) -> dict:
+        """Unblock a previously blocked inbound share."""
+        resp = await self._operator_client.post(
+            f"/v1/shares/{capability_id}/unblock"
         )
         self._raise_for_status(resp)
         return resp.json()
@@ -474,7 +524,8 @@ class MnemoClient:
     # ── Health ─────────────────────────────────────────────────────────────────
 
     async def health(self) -> dict:
-        resp = await self.http.get("/v1/health")
+        client = self._agent_client if self.agent_key else self._operator_client
+        resp = await client.get("/v1/health")
         self._raise_for_status(resp)
         return resp.json()
 
@@ -486,20 +537,17 @@ class MnemoClientSync:
     Synchronous wrapper around MnemoClient.
 
     Use this in non-async contexts (e.g. inside a synchronous agent loop,
-    a WebSocket handler, or a script). Handles the case where an event
-    loop is already running by offloading to a worker thread.
-
-    Example:
-        client = MnemoClientSync(api_key="your-key", agent_id="your-uuid")
-        client.remember("pandas.read_csv coerces mixed types")
-        results = client.recall("loading CSV files")
+    a WebSocket handler, or a script).
     """
 
-    def __init__(self, api_key: str, agent_id: str,
-                 base_url: str = "https://api.mnemo.ai"):
-        if not api_key:
-            raise ValueError("api_key is required")
-        self._api_key = api_key
+    def __init__(self, agent_key: str, agent_id: str,
+                 base_url: str = "https://api.mnemo-ai.com",
+                 # Legacy support
+                 api_key: Optional[str] = None):
+        key = agent_key or api_key
+        if not key:
+            raise ValueError("agent_key is required")
+        self._agent_key = key
         self._agent_id = agent_id
         self._base_url = base_url
 
@@ -515,7 +563,7 @@ class MnemoClientSync:
                  domain_tags: list[str] | None = None,
                  remembered_on: str | None = None) -> RememberResult:
         async def _():
-            async with MnemoClient(self._base_url, self._api_key) as c:
+            async with MnemoClient(self._base_url, agent_key=self._agent_key) as c:
                 return await c.remember(
                     self._agent_id, text, domain_tags,
                     remembered_on=remembered_on,
@@ -524,12 +572,12 @@ class MnemoClientSync:
 
     def recall(self, query: str, **kwargs) -> RecallResult:
         async def _():
-            async with MnemoClient(self._base_url, self._api_key) as c:
+            async with MnemoClient(self._base_url, agent_key=self._agent_key) as c:
                 return await c.recall(self._agent_id, query, **kwargs)
         return self._run(_())
 
     def stats(self) -> AgentStats:
         async def _():
-            async with MnemoClient(self._base_url, self._api_key) as c:
+            async with MnemoClient(self._base_url, agent_key=self._agent_key) as c:
                 return await c.stats(self._agent_id)
         return self._run(_())
