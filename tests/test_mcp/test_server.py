@@ -84,99 +84,101 @@ def without_default_agent():
 class TestStartupValidation:
     """Tests for _validate_startup()."""
 
-    async def test_startup_no_api_key(self):
-        orig_key, orig_url = srv.API_KEY, srv.BASE_URL
+    async def test_startup_no_agent_key(self):
+        orig_key, orig_url = srv.AGENT_KEY, srv.BASE_URL
         try:
-            srv.API_KEY = ""
+            srv.AGENT_KEY = ""
             srv.BASE_URL = "http://localhost:8000"
             with pytest.raises(SystemExit):
                 await srv._validate_startup()
         finally:
-            srv.API_KEY = orig_key
+            srv.AGENT_KEY = orig_key
             srv.BASE_URL = orig_url
 
     async def test_startup_no_base_url(self):
-        orig_key, orig_url = srv.API_KEY, srv.BASE_URL
+        orig_key, orig_url = srv.AGENT_KEY, srv.BASE_URL
         try:
-            srv.API_KEY = "mnemo_test"
+            srv.AGENT_KEY = "mnemo_ag_test"
             srv.BASE_URL = ""
             with pytest.raises(SystemExit):
                 await srv._validate_startup()
         finally:
-            srv.API_KEY = orig_key
-            srv.BASE_URL = orig_url
-
-    async def test_startup_invalid_api_key(self):
-        orig_key, orig_url = srv.API_KEY, srv.BASE_URL
-        try:
-            srv.API_KEY = "mnemo_bad_key"
-            srv.BASE_URL = "http://localhost:8000"
-
-            mock_client = _make_mock_client(me_side_effect=MnemoAuthError("invalid key"))
-
-            with patch.object(srv, "MnemoClient", return_value=mock_client):
-                with pytest.raises(SystemExit):
-                    await srv._validate_startup()
-        finally:
-            srv.API_KEY = orig_key
+            srv.AGENT_KEY = orig_key
             srv.BASE_URL = orig_url
 
     async def test_startup_invalid_default_agent(self):
-        orig_key, orig_url, orig_agent = srv.API_KEY, srv.BASE_URL, srv.DEFAULT_AGENT_ID
+        orig_key, orig_url, orig_agent = srv.AGENT_KEY, srv.BASE_URL, srv.DEFAULT_AGENT_ID
         try:
-            srv.API_KEY = "mnemo_test"
+            srv.AGENT_KEY = "mnemo_ag_test"
             srv.BASE_URL = "http://localhost:8000"
             srv.DEFAULT_AGENT_ID = VALID_AGENT_ID
 
-            mock_client = _make_mock_client(
-                get_agent_side_effect=MnemoNotFoundError("agent not found"),
-            )
+            mock_client = AsyncMock()
+            mock_client.stats.side_effect = MnemoNotFoundError("agent not found")
 
             with patch.object(srv, "MnemoClient", return_value=mock_client):
                 with pytest.raises(SystemExit):
                     await srv._validate_startup()
         finally:
-            srv.API_KEY = orig_key
+            srv.AGENT_KEY = orig_key
             srv.BASE_URL = orig_url
             srv.DEFAULT_AGENT_ID = orig_agent
 
-    async def test_startup_success(self):
-        orig_key, orig_url, orig_agent = srv.API_KEY, srv.BASE_URL, srv.DEFAULT_AGENT_ID
+    async def test_startup_invalid_default_agent_auth_error(self):
+        orig_key, orig_url, orig_agent = srv.AGENT_KEY, srv.BASE_URL, srv.DEFAULT_AGENT_ID
         try:
-            srv.API_KEY = "mnemo_test"
+            srv.AGENT_KEY = "mnemo_ag_bad"
             srv.BASE_URL = "http://localhost:8000"
             srv.DEFAULT_AGENT_ID = VALID_AGENT_ID
 
-            mock_client = _make_mock_client()
+            mock_client = AsyncMock()
+            mock_client.stats.side_effect = MnemoAuthError("invalid key")
+
+            with patch.object(srv, "MnemoClient", return_value=mock_client):
+                with pytest.raises(SystemExit):
+                    await srv._validate_startup()
+        finally:
+            srv.AGENT_KEY = orig_key
+            srv.BASE_URL = orig_url
+            srv.DEFAULT_AGENT_ID = orig_agent
+
+    async def test_startup_success_with_default_agent(self):
+        orig_key, orig_url, orig_agent = srv.AGENT_KEY, srv.BASE_URL, srv.DEFAULT_AGENT_ID
+        try:
+            srv.AGENT_KEY = "mnemo_ag_test"
+            srv.BASE_URL = "http://localhost:8000"
+            srv.DEFAULT_AGENT_ID = VALID_AGENT_ID
+
+            mock_client = AsyncMock()
+            mock_client.stats.return_value = {"total_atoms": 0, "active_atoms": 0}
 
             with patch.object(srv, "MnemoClient", return_value=mock_client):
                 result = await srv._validate_startup()
 
             assert result is mock_client
-            mock_client.me.assert_awaited_once()
-            mock_client.get_agent.assert_awaited_once()
+            mock_client.stats.assert_awaited_once()
         finally:
-            srv.API_KEY = orig_key
+            srv.AGENT_KEY = orig_key
             srv.BASE_URL = orig_url
             srv.DEFAULT_AGENT_ID = orig_agent
 
     async def test_startup_success_no_default(self):
-        orig_key, orig_url, orig_agent = srv.API_KEY, srv.BASE_URL, srv.DEFAULT_AGENT_ID
+        orig_key, orig_url, orig_agent = srv.AGENT_KEY, srv.BASE_URL, srv.DEFAULT_AGENT_ID
         try:
-            srv.API_KEY = "mnemo_test"
+            srv.AGENT_KEY = "mnemo_ag_test"
             srv.BASE_URL = "http://localhost:8000"
             srv.DEFAULT_AGENT_ID = None
 
-            mock_client = _make_mock_client()
+            mock_client = AsyncMock()
+            mock_client.health.return_value = {"status": "ok"}
 
             with patch.object(srv, "MnemoClient", return_value=mock_client):
                 result = await srv._validate_startup()
 
             assert result is mock_client
-            mock_client.me.assert_awaited_once()
-            mock_client.get_agent.assert_not_called()
+            mock_client.health.assert_awaited_once()
         finally:
-            srv.API_KEY = orig_key
+            srv.AGENT_KEY = orig_key
             srv.BASE_URL = orig_url
             srv.DEFAULT_AGENT_ID = orig_agent
 

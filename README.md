@@ -32,31 +32,41 @@ uv add "mnemo-ai[mcp]"
 
 ### Async (recommended)
 
+The client uses RBAC headers. Use `agent_key` for data-plane operations (remember, recall, stats, views, capabilities) and `operator_key` for management operations (register agent, list agents, inspect shares):
+
 ```python
 from mnemo.client import MnemoClient
 
-async with MnemoClient(api_key="your-key") as client:
-    # Register an agent
-    agent = await client.register_agent(
-        "my-agent",
-        persona="python developer",
-        domain_tags=["python"],
-    )
-
-    # Store a memory
+# Agent operations only (most common)
+async with MnemoClient(agent_key="mnemo_ag_...") as client:
     result = await client.remember(
-        agent_id=agent["id"],
+        agent_id="your-agent-uuid",
         text="pandas.read_csv silently coerces mixed-type columns. "
              "I discovered this processing client_data.csv. "
              "From now on I should always specify dtype explicitly.",
         domain_tags=["python", "pandas"],
     )
 
-    # Retrieve relevant memories
     results = await client.recall(
-        agent_id=agent["id"],
+        agent_id="your-agent-uuid",
         query="loading CSV files with pandas",
     )
+
+# Operator operations only
+async with MnemoClient(operator_key="mnemo_op_...") as client:
+    agent = await client.register_agent(
+        "my-agent",
+        persona="python developer",
+        domain_tags=["python"],
+    )
+
+# Both planes in one client
+async with MnemoClient(
+    agent_key="mnemo_ag_...",
+    operator_key="mnemo_op_...",
+) as client:
+    agent = await client.register_agent("my-agent")
+    await client.remember(agent_id=agent["id"], text="...")
 ```
 
 ### Sync
@@ -66,7 +76,7 @@ For non-async contexts (scripts, sync agent loops, WebSocket handlers):
 ```python
 from mnemo.client import MnemoClientSync
 
-client = MnemoClientSync(api_key="your-key", agent_id="your-uuid")
+client = MnemoClientSync(agent_key="mnemo_ag_...", agent_id="your-uuid")
 
 client.remember("pandas.read_csv coerces mixed types")
 results = client.recall("loading CSV files")
@@ -86,7 +96,7 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
       "command": "uvx",
       "args": ["mnemo-ai[mcp]"],
       "env": {
-        "MNEMO_API_KEY": "your-api-key",
+        "MNEMO_AGENT_KEY": "mnemo_ag_...",
         "MNEMO_BASE_URL": "https://your-mnemo-server.com",
         "MNEMO_DEFAULT_AGENT_ID": "your-agent-uuid"
       }
@@ -99,10 +109,12 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
 
 | Variable | Required | Description |
 |---|---|---|
-| `MNEMO_API_KEY` | Yes | API key for authentication |
+| `MNEMO_AGENT_KEY` | Yes | Agent key for data-plane authentication (sends `X-Agent-Key` header) |
 | `MNEMO_BASE_URL` | Yes | URL of the Mnemo server |
 | `MNEMO_DEFAULT_AGENT_ID` | No | Default agent UUID (so tools work without specifying agent_id) |
 | `MNEMO_MCP_TRANSPORT` | No | Transport type: `stdio` (default), `sse`, or `streamable-http` |
+
+> **Legacy support:** `MNEMO_API_KEY` is still accepted as a fallback if `MNEMO_AGENT_KEY` is not set.
 
 ### MCP tools
 
@@ -122,9 +134,15 @@ python -m mnemo.mcp
 
 ## API Reference
 
-### `MnemoClient(api_key, base_url)`
+### `MnemoClient(base_url, agent_key=None, operator_key=None, api_key=None)`
 
 Async client. Use as an async context manager or call `.close()` manually.
+
+- `agent_key` — sends `X-Agent-Key` header for data-plane operations (remember, recall, stats, views, capabilities)
+- `operator_key` — sends `X-Operator-Key` header for management operations (register agent, list agents, inspect shares, block/unblock)
+- `api_key` — legacy alias for `operator_key`
+
+At least one of `agent_key` or `operator_key` is required.
 
 #### Memory
 
@@ -176,9 +194,9 @@ Async client. Use as an async context manager or call `.close()` manually.
 |---|---|
 | `health()` | Check API health. |
 
-### `MnemoClientSync(api_key, agent_id, base_url)`
+### `MnemoClientSync(agent_key, agent_id, base_url)`
 
-Synchronous wrapper. Exposes `remember`, `recall`, and `stats` with the same signatures as the async client.
+Synchronous wrapper for agent data-plane operations. Exposes `remember`, `recall`, and `stats` with the same signatures as the async client. Legacy `api_key` parameter is accepted as a fallback for `agent_key`.
 
 ## Response Types
 
