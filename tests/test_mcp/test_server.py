@@ -253,6 +253,16 @@ class TestRemember:
         result = await mnemo_remember(text="test", agent_id=agent_id)
         assert "Error" in result
 
+    async def test_remember_generic_exception_does_not_leak(self, mock_client):
+        mock_client.remember.side_effect = RuntimeError(
+            "SECRET: /internal/path/db.sqlite3"
+        )
+        agent_id = str(uuid4())
+        result = await mnemo_remember(text="test", agent_id=agent_id)
+        assert "SECRET" not in result
+        assert "db.sqlite3" not in result
+        assert "unexpected error" in result
+
 
 # ── mnemo_recall tests ─────────────────────────────────────────────────────
 
@@ -373,6 +383,51 @@ class TestRecall:
     async def test_recall_invalid_uuid(self, mock_client):
         result = await mnemo_recall(query="test", agent_id="bad-uuid")
         assert "Invalid agent_id" in result or "valid UUID" in result
+
+    async def test_recall_clamps_max_results(self, mock_client, with_default_agent):
+        mock_client.recall.return_value = {
+            "atoms": [], "expanded_atoms": [], "total_retrieved": 0,
+        }
+        await mnemo_recall(query="test", max_results=999)
+        assert mock_client.recall.call_args.kwargs["max_results"] == 50
+
+        await mnemo_recall(query="test", max_results=-5)
+        assert mock_client.recall.call_args.kwargs["max_results"] == 1
+
+    async def test_recall_clamps_min_similarity(self, mock_client, with_default_agent):
+        mock_client.recall.return_value = {
+            "atoms": [], "expanded_atoms": [], "total_retrieved": 0,
+        }
+        await mnemo_recall(query="test", min_similarity=5.0)
+        assert mock_client.recall.call_args.kwargs["min_similarity"] == 1.0
+
+        await mnemo_recall(query="test", min_similarity=-1.0)
+        assert mock_client.recall.call_args.kwargs["min_similarity"] == 0.0
+
+    async def test_recall_clamps_similarity_drop_threshold(
+        self, mock_client, with_default_agent
+    ):
+        mock_client.recall.return_value = {
+            "atoms": [], "expanded_atoms": [], "total_retrieved": 0,
+        }
+        await mnemo_recall(query="test", similarity_drop_threshold=2.0)
+        assert mock_client.recall.call_args.kwargs["similarity_drop_threshold"] == 1.0
+
+    async def test_recall_clamps_max_total_tokens(
+        self, mock_client, with_default_agent
+    ):
+        mock_client.recall.return_value = {
+            "atoms": [], "expanded_atoms": [], "total_retrieved": 0,
+        }
+        await mnemo_recall(query="test", max_total_tokens=99999)
+        assert mock_client.recall.call_args.kwargs["max_total_tokens"] == 10000
+
+    async def test_recall_generic_exception_does_not_leak(self, mock_client):
+        mock_client.recall.side_effect = RuntimeError("SENSITIVE_INFO")
+        agent_id = str(uuid4())
+        result = await mnemo_recall(query="test", agent_id=agent_id)
+        assert "SENSITIVE_INFO" not in result
+        assert "unexpected error" in result
 
 
 # ── mnemo_stats tests ──────────────────────────────────────────────────────
@@ -659,6 +714,23 @@ class TestRecallShared:
         # but filtered is non-empty so it stops.
         assert "A" * 40 in result
         assert "B" * 40 not in result
+
+    async def test_recall_shared_clamps_max_results(
+        self, mock_client, with_default_agent
+    ):
+        mock_client.recall_all_shared.return_value = {"atoms": []}
+        await mnemo_recall_shared(query="test", max_results=999)
+        assert mock_client.recall_all_shared.call_args.kwargs["max_results"] == 50
+
+        await mnemo_recall_shared(query="test", max_results=0)
+        assert mock_client.recall_all_shared.call_args.kwargs["max_results"] == 1
+
+    async def test_recall_shared_clamps_min_similarity(
+        self, mock_client, with_default_agent
+    ):
+        mock_client.recall_all_shared.return_value = {"atoms": []}
+        await mnemo_recall_shared(query="test", min_similarity=2.0)
+        assert mock_client.recall_all_shared.call_args.kwargs["min_similarity"] == 1.0
 
     async def test_recall_shared_not_found(self, mock_client):
         mock_client.recall_all_shared.side_effect = MnemoNotFoundError("not found")
