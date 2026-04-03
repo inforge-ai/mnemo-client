@@ -22,7 +22,7 @@ BASE_URL: str = os.environ.get("MNEMO_BASE_URL", "")
 AGENT_KEY: str = os.environ.get("MNEMO_AGENT_KEY", "") or os.environ.get("MNEMO_API_KEY", "")
 DEFAULT_AGENT_ID: str | None = os.environ.get("MNEMO_DEFAULT_AGENT_ID") or None
 MCP_TRANSPORT: str = os.environ.get("MNEMO_MCP_TRANSPORT", "stdio")
-MCP_HOST: str = os.environ.get("MNEMO_MCP_HOST", "0.0.0.0")
+MCP_HOST: str = os.environ.get("MNEMO_MCP_HOST", "127.0.0.1")
 MCP_PORT: int = int(os.environ.get("MNEMO_MCP_PORT", "8001"))
 
 # ── State ─────────────────────────────────────────────────────────────────────
@@ -185,9 +185,9 @@ async def mnemo_remember(
         return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not owned by this operator"
     except ConnectionError:
         return "Error: cannot reach Mnemo server"
-    except Exception as exc:
+    except Exception:
         logger.exception("mnemo_remember failed")
-        return f"Error: {exc}"
+        return "Error: an unexpected error occurred (check server logs for details)"
 
     return (
         f"Memory queued for storage (store_id: {result['store_id']}). "
@@ -224,6 +224,14 @@ async def mnemo_recall(
         verbosity: "summary" (first sentence) or "full" (complete).
         max_total_tokens: Approximate token budget for results.
     """
+    # Clamp numeric parameters to valid ranges
+    max_results = min(max(max_results, 1), 50)
+    min_similarity = min(max(min_similarity, 0.0), 1.0)
+    if similarity_drop_threshold is not None:
+        similarity_drop_threshold = min(max(similarity_drop_threshold, 0.0), 1.0)
+    if max_total_tokens is not None:
+        max_total_tokens = min(max(max_total_tokens, 1), 10000)
+
     try:
         agent_uuid = _resolve_agent_id(agent_id)
     except ValueError as exc:
@@ -249,9 +257,9 @@ async def mnemo_recall(
         return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not owned by this operator"
     except ConnectionError:
         return "Error: cannot reach Mnemo server"
-    except Exception as exc:
+    except Exception:
         logger.exception("mnemo_recall failed")
-        return f"Error: {exc}"
+        return "Error: an unexpected error occurred (check server logs for details)"
 
     atoms = result.get("atoms", [])
     expanded = result.get("expanded_atoms", [])
@@ -314,9 +322,9 @@ async def mnemo_stats(
         return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not owned by this operator"
     except ConnectionError:
         return "Error: cannot reach Mnemo server"
-    except Exception as exc:
+    except Exception:
         logger.exception("mnemo_stats failed")
-        return f"Error: {exc}"
+        return "Error: an unexpected error occurred (check server logs for details)"
 
     return (
         f"Total memories: {result['total_atoms']} "
@@ -363,9 +371,9 @@ async def mnemo_share(
         grantee_id = await client.resolve_address(share_with)
     except MnemoNotFoundError:
         return f"Error: agent {share_with} not found"
-    except Exception as exc:
+    except Exception:
         logger.exception("mnemo_share: resolve_address failed")
-        return f"Error resolving address: {exc}"
+        return "Error: an unexpected error occurred (check server logs for details)"
 
     import time
 
@@ -401,9 +409,9 @@ async def mnemo_share(
         return f"Error: {e}"
     except MnemoAuthError as e:
         return f"Error: {e}"
-    except Exception as exc:
+    except Exception:
         logger.exception("mnemo_share failed")
-        return f"Error: {exc}"
+        return "Error: an unexpected error occurred (check server logs for details)"
 
 
 @mcp_server.tool(
@@ -446,9 +454,9 @@ async def mnemo_revoke_share(
         return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not owned by this operator"
     except ConnectionError:
         return "Error: cannot reach Mnemo server"
-    except Exception as exc:
+    except Exception:
         logger.exception("mnemo_revoke_share failed")
-        return f"Error: {exc}"
+        return "Error: an unexpected error occurred (check server logs for details)"
 
     if result.get("was_already_revoked"):
         return f"This share was already revoked on {result['revoked_at']}."
@@ -491,9 +499,9 @@ async def mnemo_list_shared(
             return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not found"
         except MnemoAuthError:
             return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not owned by this operator"
-        except Exception as exc:
+        except Exception:
             logger.exception("mnemo_list_shared outbound failed")
-            return f"Error: {exc}"
+            return "Error: an unexpected error occurred (check server logs for details)"
 
         if not caps:
             return "No outbound shares."
@@ -516,9 +524,9 @@ async def mnemo_list_shared(
         return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not found"
     except MnemoAuthError:
         return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not owned by this operator"
-    except Exception as exc:
+    except Exception:
         logger.exception("mnemo_list_shared failed")
-        return f"Error: {exc}"
+        return "Error: an unexpected error occurred (check server logs for details)"
 
     if not shared_views:
         return "No shared views available."
@@ -562,6 +570,12 @@ async def mnemo_recall_shared(
         max_total_tokens: Approximate token budget for results.
         agent_id: UUID of the receiving agent. Optional if default configured.
     """
+    # Clamp numeric parameters to valid ranges
+    max_results = min(max(max_results, 1), 50)
+    min_similarity = min(max(min_similarity, 0.0), 1.0)
+    if max_total_tokens is not None:
+        max_total_tokens = min(max(max_total_tokens, 1), 10000)
+
     try:
         agent_uuid = _resolve_agent_id(agent_id)
     except ValueError as exc:
@@ -585,9 +599,9 @@ async def mnemo_recall_shared(
         return f"Error: agent {agent_id or DEFAULT_AGENT_ID} not owned by this operator"
     except ConnectionError:
         return "Error: cannot reach Mnemo server"
-    except Exception as exc:
+    except Exception:
         logger.exception("mnemo_recall_shared failed")
-        return f"Error: {exc}"
+        return "Error: an unexpected error occurred (check server logs for details)"
 
     atoms = result.get("atoms", [])
     if not atoms:

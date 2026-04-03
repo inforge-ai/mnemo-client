@@ -113,6 +113,8 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
 | `MNEMO_BASE_URL` | Yes | URL of the Mnemo server |
 | `MNEMO_DEFAULT_AGENT_ID` | No | Default agent UUID (so tools work without specifying agent_id) |
 | `MNEMO_MCP_TRANSPORT` | No | Transport type: `stdio` (default), `sse`, or `streamable-http` |
+| `MNEMO_MCP_HOST` | No | Bind address for HTTP/SSE transports (default `127.0.0.1`) |
+| `MNEMO_MCP_PORT` | No | Port for HTTP/SSE transports (default `8001`) |
 
 > **Legacy support:** `MNEMO_API_KEY` is still accepted as a fallback if `MNEMO_AGENT_KEY` is not set.
 
@@ -148,7 +150,7 @@ At least one of `agent_key` or `operator_key` is required.
 
 | Method | Description |
 |---|---|
-| `remember(agent_id, text, domain_tags=None)` | Store a memory. The server decomposes it into typed atoms and links them. Returns `RememberResult`. |
+| `remember(agent_id, text, domain_tags=None, remembered_on=None)` | Store a memory. The server decomposes it into typed atoms and links them. `remembered_on` accepts an ISO-8601 datetime to anchor relative time references. Returns `RememberResult`. |
 | `recall(agent_id, query, ...)` | Semantic search over stored memories. Returns `RecallResult`. |
 
 #### Agent Management
@@ -185,8 +187,20 @@ At least one of `agent_key` or `operator_key` is required.
 |---|---|
 | `grant(agent_id, view_id, grantee_id, permissions=None, expires_at=None)` | Grant another agent access to a view. |
 | `revoke(capability_id)` | Revoke a previously granted capability. |
+| `revoke_shared_view(agent_id, capability_id)` | Revoke a capability scoped to an agent. |
+| `list_outbound_capabilities(agent_id)` | List capabilities this agent has granted to others. |
 | `list_shared_views(agent_id)` | List views shared with this agent. Returns `trusted` boolean per view. |
-| `recall_shared(agent_id, view_id, query, ...)` | Recall memories scoped to a shared view. |
+| `recall_shared(agent_id, view_id, query, ...)` | Recall memories scoped to a single shared view. |
+| `recall_all_shared(agent_id, query, ...)` | Recall across all shared views (cross-view search). |
+| `resolve_address(address)` | Resolve an agent address (e.g. `"name:org"`) to a UUID. |
+
+#### Operator Share Management
+
+| Method | Description |
+|---|---|
+| `inspect_shares()` | List all inbound and outbound shares for this operator's agents. |
+| `block_share(capability_id)` | Block an inbound share to one of this operator's agents. |
+| `unblock_share(capability_id)` | Unblock a previously blocked inbound share. |
 
 #### Other
 
@@ -200,9 +214,9 @@ Synchronous wrapper for agent data-plane operations. Exposes `remember`, `recall
 
 ## Response Types
 
-- **`RememberResult`** — `atoms_created`, `edges_created`, `duplicates_merged`
+- **`RememberResult`** — `status`, `store_id`
 - **`RecallResult`** — `atoms`, `expanded_atoms`, `total_retrieved`
-- **`AgentStats`** — `total_atoms`, `active_atoms`, `atoms_by_type`, `total_edges`, `avg_effective_confidence`, `active_views`, `granted_capabilities`, `received_capabilities`
+- **`AgentStats`** — `agent_id`, `total_atoms`, `active_atoms`, `atoms_by_type`, `total_edges`, `avg_effective_confidence`, `active_views`, `granted_capabilities`, `received_capabilities`
 
 ## Exceptions
 
