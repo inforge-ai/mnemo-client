@@ -7,9 +7,10 @@ import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib.metadata import version as _pkg_version
 from uuid import UUID
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from mnemo.client import MnemoAuthError, MnemoClient, MnemoNotFoundError
 
@@ -106,7 +107,7 @@ async def _validate_startup() -> MnemoClient:
 # ── Lifespan ──────────────────────────────────────────────────────────────────
 
 @asynccontextmanager
-async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
+async def _lifespan(server: MCPServer) -> AsyncIterator[None]:
     """Async context manager: validate on startup, clean up on shutdown."""
     global _client
     _client = await _validate_startup()
@@ -118,7 +119,7 @@ async def _lifespan(server: FastMCP) -> AsyncIterator[None]:
             _client = None
 
 
-# ── FastMCP instance ──────────────────────────────────────────────────────────
+# ── MCPServer instance ─────────────────────────────────────────────────────────
 
 INSTRUCTIONS = (
     "Mnemo Memory Server — store and retrieve persistent memories for AI agents. "
@@ -129,11 +130,10 @@ INSTRUCTIONS = (
     "and mnemo_revoke_share to revoke a shared view."
 )
 
-mcp_server = FastMCP(
+mcp_server = MCPServer(
     name="mnemo-memory",
     instructions=INSTRUCTIONS,
-    host=MCP_HOST,
-    port=MCP_PORT,
+    version=_pkg_version("mnemo-ai"),
     lifespan=_lifespan,
 )
 
@@ -650,5 +650,6 @@ def main() -> None:
 
     if MCP_TRANSPORT in ("sse", "streamable-http"):
         logger.info("Starting mnemo-mcp on %s:%d (transport=%s)", MCP_HOST, MCP_PORT, MCP_TRANSPORT)
-
-    mcp_server.run(transport=MCP_TRANSPORT)
+        mcp_server.run(transport=MCP_TRANSPORT, host=MCP_HOST, port=MCP_PORT)
+    else:
+        mcp_server.run(transport=MCP_TRANSPORT)

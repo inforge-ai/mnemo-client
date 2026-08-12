@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 import pytest
+from mcp.client import Client
 
 import mnemo.mcp.server as srv
 from mnemo.client import MnemoAuthError, MnemoNotFoundError
@@ -863,3 +864,42 @@ class TestListSharedOutbound:
         result = await mnemo_list_shared(direction="outbound")
         assert "revoked" in result
         assert "old-share" in result
+
+
+# ── MCP SDK v2 compatibility ─────────────────────────────────────────────
+
+
+class TestV2ServerCompat:
+    """Confirm the mcp>=2 MCPServer instance is wired up correctly."""
+
+    def test_server_version_is_set(self):
+        # v2 servers without an explicit `version=` report an empty string
+        # to clients; we set it from the installed package metadata.
+        assert srv.mcp_server.version
+
+    async def test_client_round_trip(self):
+        """In-process v2 Client(mode='auto') round-trip: list tools, call one."""
+        orig_key, orig_url, orig_agent = srv.AGENT_KEY, srv.BASE_URL, srv.DEFAULT_AGENT_ID
+        try:
+            srv.AGENT_KEY = "mnemo_ag_test"
+            srv.BASE_URL = "http://localhost:8000"
+            srv.DEFAULT_AGENT_ID = VALID_AGENT_ID
+
+            mock_client = AsyncMock()
+            mock_client.stats.return_value = {"total_atoms": 0, "active_atoms": 0}
+            mock_client.remember.return_value = {
+                "status": "queued",
+                "store_id": str(uuid4()),
+            }
+
+            with patch.object(srv, "MnemoClient", return_value=mock_client):
+                async with Client(srv.mcp_server) as client:
+                    tools = await client.list_tools()
+                    names = {tool.name for tool in tools.tools}
+                    assert "mnemo_remember" in names
+                    assert "mnemo_recall" in names
+
+                    result = await client.call_tool("mnemo_remember", {"text": "hello"})
+                    assert result.is_error is not True
+        finally:
+            srv.AGENT_KEY, srv.BASE_URL, srv.DEFAULT_AGENT_ID = orig_key, orig_url, orig_agent
