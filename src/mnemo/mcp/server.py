@@ -639,6 +639,54 @@ async def mnemo_recall_shared(
     return "\n".join(lines)
 
 
+# ── Smoke test ───────────────────────────────────────────────────────────────
+
+def _run_smoke_test() -> None:
+    """Fresh-install check for CI (see specs/migrate-mcp-07-2026-spec.md Phase 6).
+
+    Self-connects to this process's own MCPServer over the real v2 in-process
+    Client, exercising the actual handshake and a tools/list call — not just
+    an import. A stub MnemoClient stands in for the backend so this needs no
+    live Mnemo server or credentials. Catches the class of failure that broke
+    installs between the 2026-07-27 mcp v2.0.0 release and the emergency pin:
+    bad metadata, an upstream breaking major with our bounds open, or
+    platform-specific resolution failures — with zero human in the loop.
+    """
+    import asyncio
+
+    from mcp.client import Client
+
+    class _StubMnemoClient:
+        async def health(self) -> dict[str, str]:
+            return {"status": "ok"}
+
+        async def close(self) -> None:
+            pass
+
+    global AGENT_KEY, BASE_URL
+    AGENT_KEY = AGENT_KEY or "mnemo_ag_smoke_test"
+    BASE_URL = BASE_URL or "http://smoke-test.invalid"
+    globals()["MnemoClient"] = lambda *_args, **_kwargs: _StubMnemoClient()
+
+    async def _list_tool_count() -> int:
+        async with Client(mcp_server) as client:
+            result = await client.list_tools()
+        return len(result.tools)
+
+    try:
+        count = asyncio.run(_list_tool_count())
+    except Exception:
+        logger.exception("smoke test failed")
+        sys.exit(1)
+
+    if count == 0:
+        logger.error("smoke test failed: no tools registered")
+        sys.exit(1)
+
+    logger.info("smoke test ok: %d tools registered (mnemo-mcp %s)", count, mcp_server.version)
+    sys.exit(0)
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
@@ -647,6 +695,10 @@ def main() -> None:
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     )
+
+    if "--smoke-test" in sys.argv[1:]:
+        _run_smoke_test()
+        return
 
     if MCP_TRANSPORT in ("sse", "streamable-http"):
         logger.info("Starting mnemo-mcp on %s:%d (transport=%s)", MCP_HOST, MCP_PORT, MCP_TRANSPORT)

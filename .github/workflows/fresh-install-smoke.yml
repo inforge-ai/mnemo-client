@@ -1,0 +1,33 @@
+name: fresh-install-smoke
+
+# Reproduces the real-world install path (uvx from PyPI, clean cache) rather
+# than the dev path, on a schedule with zero human in the loop. Added after
+# the 2026-07-27 mcp v2.0.0 release broke fresh resolves under our open
+# `mcp<2` bound and we had to ship an emergency pin — see
+# specs/migrate-mcp-07-2026-spec.md Phase 6.
+#
+# Failure notification: intentionally no extra plumbing here. A scheduled
+# workflow run that fails triggers GitHub's built-in email notification to
+# the user who last edited this file, which is the lowest-friction option
+# available and needs no additional service or secret.
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Fresh resolve from PyPI and handshake
+        shell: bash
+        run: |
+          uv cache clean
+          uvx --from 'mnemo-ai[mcp]' mnemo-mcp --smoke-test
