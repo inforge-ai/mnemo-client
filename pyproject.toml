@@ -1,6 +1,6 @@
 [project]
 name = "mnemo-ai"
-version = "0.5.0"
+version = "0.6.0"
 description = "Lightweight async Python client for the Mnemo API. For support or queries contact 'support@mnemo-ai.com'."
 readme = "README.md"
 license = "Apache-2.0"

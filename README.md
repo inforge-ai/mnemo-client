@@ -97,8 +97,7 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
       "args": ["mnemo-ai[mcp]"],
       "env": {
         "MNEMO_AGENT_KEY": "mnemo_ag_...",
-        "MNEMO_BASE_URL": "https://your-mnemo-server.com",
-        "MNEMO_DEFAULT_AGENT_ID": "your-agent-uuid"
+        "MNEMO_BASE_URL": "https://your-mnemo-server.com"
       }
     }
   }
@@ -111,7 +110,7 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
 |---|---|---|
 | `MNEMO_AGENT_KEY` | Yes | Agent key for data-plane authentication (sends `X-Agent-Key` header) |
 | `MNEMO_BASE_URL` | Yes | URL of the Mnemo server |
-| `MNEMO_DEFAULT_AGENT_ID` | No | Default agent UUID (so tools work without specifying agent_id) |
+| `MNEMO_DEFAULT_AGENT_ID` | No | Default agent (UUID, name or address). If unset, tools use the agent the key belongs to (`GET /v1/agents/me`). |
 | `MNEMO_MCP_TRANSPORT` | No | Transport type: `stdio` (default), `sse`, or `streamable-http` |
 | `MNEMO_MCP_HOST` | No | Bind address for HTTP/SSE transports (default `127.0.0.1`) |
 | `MNEMO_MCP_PORT` | No | Port for HTTP/SSE transports (default `8001`) |
@@ -120,7 +119,21 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
 
 ### MCP tools
 
-The server exposes 7 tools: `mnemo_remember`, `mnemo_recall`, `mnemo_stats`, `mnemo_share`, `mnemo_list_shared`, `mnemo_recall_shared`, `mnemo_revoke_share`.
+The server exposes 10 tools:
+
+| Tool | What it does |
+|---|---|
+| `mnemo_remember` | Store a memory and get back exactly what was stored: one line per atom, with its id, type, date and any flags. Optional `speaker`, `addressee`, `channel`, `origin_class`, `remembered_on`. Abbreviations and codes are stored exactly as written; spell them out in the text if the meaning matters. If the server cannot decompose the text, it is kept and the reply says how to retry. |
+| `mnemo_recall` | Search memories. `since` / `until` (ISO dates, on when the memory happened) and `atom_types` filter on the server. Default `verbosity="full"` returns each memory complete up to `max_chars_per_atom` (600); `"summary"` returns first sentences. |
+| `mnemo_recent` | Newest memories without searching; `order_by="stored"` (default) or `"event"`. |
+| `mnemo_forget` | Delete one memory by atom id (audited as deleted by the agent). |
+| `mnemo_store_status` | Status and atoms of a store; `retry=True` re-runs a failed store. |
+| `mnemo_stats` | Memory statistics. |
+| `mnemo_share`, `mnemo_list_shared`, `mnemo_recall_shared`, `mnemo_revoke_share` | Sharing (unchanged). |
+
+`agent_id` is optional on every tool and accepts a UUID, an agent name (`clio`) or an address (`clio:tom.inforge`). Every line of remember, recall and recent output starts with the full atom id, so `mnemo_forget` can act on it.
+
+Requires a mnemo server with v2 Phase 1 (`/v1/agents/me`, synchronous remember). Against an older server, `mnemo_remember` reports "queued".
 
 `mnemo_list_shared` displays a `[trusted]` or `[UNTRUSTED]` label per view based on the server's trust auth layer. Trust is managed by operators via the server CLI, not through MCP tools.
 
@@ -150,8 +163,11 @@ At least one of `agent_key` or `operator_key` is required.
 
 | Method | Description |
 |---|---|
-| `remember(agent_id, text, domain_tags=None, remembered_on=None)` | Store a memory. The server decomposes it into typed atoms and links them. `remembered_on` accepts an ISO-8601 datetime to anchor relative time references. Returns `RememberResult`. |
-| `recall(agent_id, query, ...)` | Semantic search over stored memories. Returns `RecallResult`. |
+| `remember(agent_id, text, domain_tags=None, remembered_on=None, speaker=None, addressee=None, channel=None, origin_class=None, wait=True)` | Store a memory. The server decomposes it into typed atoms and links them, and (with `wait=True`) returns them. `remembered_on` accepts an ISO-8601 datetime to anchor relative time references. Raises `MnemoStoreFailedError` if decomposition fails (the text is kept). Returns `RememberResult`. 120 s timeout. |
+| `store_status(store_id)` / `retry_store(store_id)` | Status and atoms of a store; re-run a failed store. |
+| `recent(agent_id, limit=20, since=None, until=None, atom_types=None, domain_tags=None, order_by="stored")` | Newest memories without searching. |
+| `whoami()` | The agent the key belongs to (`id`, `name`, `address`, `status`). |
+| `recall(agent_id, query, ..., since=None, until=None, atom_types=None, max_content_chars=None)` | Semantic search over stored memories. Returns `RecallResult`. |
 
 #### Agent Management
 
@@ -214,7 +230,7 @@ Synchronous wrapper for agent data-plane operations. Exposes `remember`, `recall
 
 ## Response Types
 
-- **`RememberResult`** — `status`, `store_id`
+- **`RememberResult`** — `status` (`complete` or `queued`), `store_id`, `source_id`, `atoms_created`, `duplicates_merged`, `atoms` (each: `id`, `atom_type`, `text_content`, `remembered_on`, `source_quote`, `merged_into_existing`, `flags`), `warnings`
 - **`RecallResult`** — `atoms`, `expanded_atoms`, `total_retrieved`
 - **`AgentStats`** — `agent_id`, `total_atoms`, `active_atoms`, `atoms_by_type`, `total_edges`, `avg_effective_confidence`, `active_views`, `granted_capabilities`, `received_capabilities`
 
@@ -225,6 +241,7 @@ Synchronous wrapper for agent data-plane operations. Exposes `remember`, `recall
 | `MnemoAuthError` | 401 or 403 response |
 | `MnemoNotFoundError` | 404 response |
 | `MnemoServerError` | 5xx response |
+| `MnemoStoreFailedError` | `remember` / `retry_store` failed server-side; has `store_id`, `source_id`, `error` (subclass of `MnemoServerError`) |
 | `MnemoError` | Base class for all Mnemo errors |
 
 ## License
