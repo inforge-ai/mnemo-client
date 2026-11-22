@@ -35,7 +35,7 @@ STORED = {
         {"id": A1, "atom_type": "episodic", "text_content": "Tom moved the release to 2026-12-03.",
          "remembered_on": "2026-11-20T00:00:00Z", "merged_into_existing": False, "flags": []},
         {"id": A2, "atom_type": "semantic", "text_content": "The VXUS sleeve is rebalanced monthly.",
-         "remembered_on": None, "merged_into_existing": True, "flags": ["abbreviation_altered"]},
+         "remembered_on": None, "merged_into_existing": True, "flags": ["unsupported_term"]},
     ],
     "warnings": ["input split into 2 parts"],
 }
@@ -52,7 +52,7 @@ async def test_remember_lists_atoms_with_ids_and_flags(client):
     lines = out.splitlines()
     assert lines[0] == f"Stored 1 new, 1 merged (store_id {STORE})."
     assert lines[1] == f"- {A1} [episodic 2026-11-20] Tom moved the release to 2026-12-03."
-    assert lines[2] == f"- {A2} [semantic, merged] The VXUS sleeve is rebalanced monthly.  ⚑ abbreviation_altered"
+    assert lines[2] == f"- {A2} [semantic, merged] The VXUS sleeve is rebalanced monthly.  ⚑ unsupported_term"
     assert "(note: input split into 2 parts)" in out
     kw = client.remember.call_args.kwargs
     assert kw["agent_id"] == SELF  # defaulted from /agents/me
