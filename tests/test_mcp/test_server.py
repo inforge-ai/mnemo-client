@@ -23,6 +23,7 @@ from mnemo.mcp.server import (
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
 VALID_AGENT_ID = str(uuid4())
+SELF_AGENT_ID = str(uuid4())  # what GET /agents/me returns for the key
 OPERATOR_INFO = {"id": str(uuid4()), "name": "test-operator", "agent_count": 1}
 
 
@@ -57,10 +58,13 @@ def _make_mock_client(
 def mock_client():
     """Create a mock MnemoClient and inject it into the server module."""
     client = AsyncMock()
+    client.whoami.return_value = {"id": SELF_AGENT_ID, "name": "self-agent", "status": "active"}
     original = srv._client
     srv._client = client
+    srv._self_agent_id = None
     yield client
     srv._client = original
+    srv._self_agent_id = None
 
 
 @pytest.fixture
@@ -171,13 +175,15 @@ class TestStartupValidation:
             srv.DEFAULT_AGENT_ID = None
 
             mock_client = AsyncMock()
-            mock_client.health.return_value = {"status": "ok"}
+            mock_client.whoami.return_value = {"id": SELF_AGENT_ID, "name": "self-agent"}
 
             with patch.object(srv, "MnemoClient", return_value=mock_client):
                 result = await srv._validate_startup()
 
             assert result is mock_client
-            mock_client.health.assert_awaited_once()
+            mock_client.whoami.assert_awaited_once()
+            assert srv._self_agent_id == SELF_AGENT_ID
+            srv._self_agent_id = None
         finally:
             srv.AGENT_KEY = orig_key
             srv.BASE_URL = orig_url
@@ -190,11 +196,16 @@ class TestStartupValidation:
 class TestRemember:
     """Tests for the mnemo_remember tool."""
 
-    async def test_remember_requires_agent_id_when_no_default(
+    async def test_remember_defaults_to_key_agent_when_no_default(
         self, mock_client, without_default_agent
     ):
+        mock_client.remember.return_value = {"status": "complete", "store_id": "s", "atoms": []}
+        mock_client.recall.return_value = {"atoms": [], "expanded_atoms": []}
+        mock_client.recall_all_shared.return_value = {"atoms": [], "total_retrieved": 0}
+        mock_client.stats.return_value = {"total_atoms": 0, "active_atoms": 0, "atoms_by_type": {}}
+        mock_client.list_shared_views.return_value = []
         result = await mnemo_remember(text="test")
-        assert "agent_id is required" in result
+        mock_client.whoami.assert_awaited_once()
 
     async def test_remember_uses_default_agent(
         self, mock_client, with_default_agent
@@ -222,8 +233,8 @@ class TestRemember:
         assert str(call_kwargs["agent_id"]) != VALID_AGENT_ID
 
     async def test_remember_invalid_uuid(self, mock_client):
-        result = await mnemo_remember(text="test", agent_id="not-a-uuid")
-        assert "Invalid agent_id" in result or "valid UUID" in result
+        result = await mnemo_remember(text="test", agent_id="not a uuid!")
+        assert "Invalid agent_id" in result and "UUID, an agent name" in result
 
     async def test_remember_nonexistent_agent(self, mock_client):
         mock_client.remember.side_effect = MnemoNotFoundError("not found")
@@ -235,7 +246,7 @@ class TestRemember:
         mock_client.remember.side_effect = MnemoAuthError("Permission denied")
         agent_id = str(uuid4())
         result = await mnemo_remember(text="test", agent_id=agent_id)
-        assert "not owned" in result
+        assert "not accessible" in result
 
     async def test_remember_success(self, mock_client):
         store_id = str(uuid4())
@@ -271,11 +282,16 @@ class TestRemember:
 class TestRecall:
     """Tests for the mnemo_recall tool."""
 
-    async def test_recall_requires_agent_id_when_no_default(
+    async def test_recall_defaults_to_key_agent_when_no_default(
         self, mock_client, without_default_agent
     ):
+        mock_client.remember.return_value = {"status": "complete", "store_id": "s", "atoms": []}
+        mock_client.recall.return_value = {"atoms": [], "expanded_atoms": []}
+        mock_client.recall_all_shared.return_value = {"atoms": [], "total_retrieved": 0}
+        mock_client.stats.return_value = {"total_atoms": 0, "active_atoms": 0, "atoms_by_type": {}}
+        mock_client.list_shared_views.return_value = []
         result = await mnemo_recall(query="test")
-        assert "agent_id is required" in result
+        mock_client.whoami.assert_awaited_once()
 
     async def test_recall_uses_default_agent(
         self, mock_client, with_default_agent
@@ -382,8 +398,8 @@ class TestRecall:
         assert "Related" in result
 
     async def test_recall_invalid_uuid(self, mock_client):
-        result = await mnemo_recall(query="test", agent_id="bad-uuid")
-        assert "Invalid agent_id" in result or "valid UUID" in result
+        result = await mnemo_recall(query="test", agent_id="bad uuid!")
+        assert "Invalid agent_id" in result and "UUID, an agent name" in result
 
     async def test_recall_clamps_max_results(self, mock_client, with_default_agent):
         mock_client.recall.return_value = {
@@ -437,11 +453,16 @@ class TestRecall:
 class TestStats:
     """Tests for the mnemo_stats tool."""
 
-    async def test_stats_requires_agent_id_when_no_default(
+    async def test_stats_defaults_to_key_agent_when_no_default(
         self, mock_client, without_default_agent
     ):
+        mock_client.remember.return_value = {"status": "complete", "store_id": "s", "atoms": []}
+        mock_client.recall.return_value = {"atoms": [], "expanded_atoms": []}
+        mock_client.recall_all_shared.return_value = {"atoms": [], "total_retrieved": 0}
+        mock_client.stats.return_value = {"total_atoms": 0, "active_atoms": 0, "atoms_by_type": {}}
+        mock_client.list_shared_views.return_value = []
         result = await mnemo_stats()
-        assert "agent_id is required" in result
+        mock_client.whoami.assert_awaited_once()
 
     async def test_stats_uses_default_agent(
         self, mock_client, with_default_agent
@@ -490,11 +511,16 @@ class TestStats:
 class TestShare:
     """Tests for the mnemo_share tool."""
 
-    async def test_share_requires_agent_id_when_no_default(
+    async def test_share_defaults_to_key_agent_when_no_default(
         self, mock_client, without_default_agent
     ):
+        mock_client.remember.return_value = {"status": "complete", "store_id": "s", "atoms": []}
+        mock_client.recall.return_value = {"atoms": [], "expanded_atoms": []}
+        mock_client.recall_all_shared.return_value = {"atoms": [], "total_retrieved": 0}
+        mock_client.stats.return_value = {"total_atoms": 0, "active_atoms": 0, "atoms_by_type": {}}
+        mock_client.list_shared_views.return_value = []
         result = await mnemo_share(query="test", share_with="bob:org")
-        assert "agent_id is required" in result
+        mock_client.whoami.assert_awaited_once()
 
     async def test_share_resolve_address_not_found(
         self, mock_client, with_default_agent
@@ -544,9 +570,9 @@ class TestShare:
 
     async def test_share_invalid_uuid(self, mock_client):
         result = await mnemo_share(
-            query="test", share_with="bob:org", agent_id="bad"
+            query="test", share_with="bob:org", agent_id="bad agent?"
         )
-        assert "Invalid agent_id" in result or "valid UUID" in result
+        assert "Invalid agent_id" in result and "UUID, an agent name" in result
 
 
 # ── mnemo_list_shared tests ──────────────────────────────────────────────
@@ -555,11 +581,16 @@ class TestShare:
 class TestListShared:
     """Tests for the mnemo_list_shared tool."""
 
-    async def test_list_shared_requires_agent_id_when_no_default(
+    async def test_list_shared_defaults_to_key_agent_when_no_default(
         self, mock_client, without_default_agent
     ):
+        mock_client.remember.return_value = {"status": "complete", "store_id": "s", "atoms": []}
+        mock_client.recall.return_value = {"atoms": [], "expanded_atoms": []}
+        mock_client.recall_all_shared.return_value = {"atoms": [], "total_retrieved": 0}
+        mock_client.stats.return_value = {"total_atoms": 0, "active_atoms": 0, "atoms_by_type": {}}
+        mock_client.list_shared_views.return_value = []
         result = await mnemo_list_shared()
-        assert "agent_id is required" in result
+        mock_client.whoami.assert_awaited_once()
 
     async def test_list_shared_empty(self, mock_client, with_default_agent):
         mock_client.list_shared_views.return_value = []
@@ -591,7 +622,7 @@ class TestListShared:
         mock_client.list_shared_views.side_effect = MnemoAuthError("denied")
         agent_id = str(uuid4())
         result = await mnemo_list_shared(agent_id=agent_id)
-        assert "not owned" in result
+        assert "not accessible" in result
 
 
 # ── mnemo_recall_shared tests ────────────────────────────────────────────
@@ -600,11 +631,16 @@ class TestListShared:
 class TestRecallShared:
     """Tests for the mnemo_recall_shared tool."""
 
-    async def test_recall_shared_requires_agent_id_when_no_default(
+    async def test_recall_shared_defaults_to_key_agent_when_no_default(
         self, mock_client, without_default_agent
     ):
+        mock_client.remember.return_value = {"status": "complete", "store_id": "s", "atoms": []}
+        mock_client.recall.return_value = {"atoms": [], "expanded_atoms": []}
+        mock_client.recall_all_shared.return_value = {"atoms": [], "total_retrieved": 0}
+        mock_client.stats.return_value = {"total_atoms": 0, "active_atoms": 0, "atoms_by_type": {}}
+        mock_client.list_shared_views.return_value = []
         result = await mnemo_recall_shared(query="test")
-        assert "agent_id is required" in result
+        mock_client.whoami.assert_awaited_once()
 
     async def test_recall_shared_empty(self, mock_client, with_default_agent):
         mock_client.recall_all_shared.return_value = {"atoms": []}
@@ -794,7 +830,7 @@ class TestRevokeShare:
         mock_client.revoke_shared_view.side_effect = MnemoAuthError("denied")
         cap_id = str(uuid4())
         result = await mnemo_revoke_share(capability_id=cap_id)
-        assert "not owned" in result
+        assert "not accessible" in result
 
     async def test_revoke_default_agent(self, mock_client, with_default_agent):
         cap_id = str(uuid4())

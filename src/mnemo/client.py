@@ -55,11 +55,41 @@ class MnemoServerError(MnemoError):
     pass
 
 
+class MnemoStoreFailedError(MnemoServerError):
+    """remember / retry failed on the server (HTTP 502 or 500).
+
+    The text was kept server-side: `store_id` can be retried with
+    MnemoClient.retry_store(). `error` is the server's plain reason.
+    """
+
+    def __init__(self, store_id: str, source_id: str | None, error: str, status_code: int):
+        super().__init__(f"Store {store_id} failed: {error}")
+        self.store_id = store_id
+        self.source_id = source_id
+        self.error = error
+        self.status_code = status_code
+
+
 # ── Typed response shapes ──────────────────────────────────────────────────────
 
-class RememberResult(TypedDict):
-    status: str
+class StoredAtom(TypedDict, total=False):
+    id: str
+    atom_type: str
+    text_content: str
+    remembered_on: Optional[str]
+    source_quote: Optional[str]
+    merged_into_existing: bool
+    flags: list[str]
+
+
+class RememberResult(TypedDict, total=False):
+    status: str                 # "complete" (wait=True) or "queued" (wait=False)
     store_id: str
+    source_id: str
+    atoms_created: int
+    duplicates_merged: int
+    atoms: list[StoredAtom]
+    warnings: list[str]
 
 
 class Atom(TypedDict):
@@ -91,6 +121,12 @@ class AgentStats(TypedDict):
     granted_capabilities: int
     received_capabilities: int
 
+
+# Synchronous remember can take a model call or several (server deadline 90 s).
+REMEMBER_TIMEOUT_SECONDS = 120.0
+ORIGIN_CLASSES = (
+    "user_stated", "professional", "measurement", "document", "agent_inference", "unspecified",
+)
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -190,21 +226,90 @@ class MnemoClient:
 
     # ── Primary Interface (agent key) ─────────────────────────────────────────
 
+    def _raise_for_store(self, resp: httpx.Response) -> None:
+        """remember/retry: a failed store returns a structured body."""
+        if resp.status_code in (500, 502):
+            try:
+                body = resp.json()
+            except ValueError:
+                body = {}
+            if body.get("status") == "failed" and body.get("store_id"):
+                raise MnemoStoreFailedError(
+                    body["store_id"], body.get("source_id"), body.get("error", "store failed"),
+                    resp.status_code,
+                )
+        self._raise_for_status(resp)
+
     async def remember(
         self,
-        agent_id: UUID,
+        agent_id: UUID | str,
         text: str,
         domain_tags: Optional[list[str]] = None,
         remembered_on: Optional[str] = None,
+        speaker: Optional[str] = None,
+        addressee: Optional[str] = None,
+        channel: Optional[str] = None,
+        origin_class: Optional[str] = None,
+        wait: bool = True,
     ) -> RememberResult:
-        """Store a memory. Just say what happened. Server decomposes and links."""
-        body: dict = {"text": text, "domain_tags": domain_tags or []}
-        if remembered_on is not None:
-            body["remembered_on"] = remembered_on
+        """Store a memory. Just say what happened. Server decomposes and links.
+
+        wait=True (server default): returns the stored atoms. Raises
+        MnemoStoreFailedError if decomposition fails (the text is kept and
+        the store can be retried). agent_id: UUID, agent name or address.
+        """
+        body: dict = {"text": text, "domain_tags": domain_tags or [], "wait": wait}
+        for key, value in (("remembered_on", remembered_on), ("speaker", speaker),
+                           ("addressee", addressee), ("channel", channel),
+                           ("origin_class", origin_class)):
+            if value is not None:
+                body[key] = value
         resp = await self._agent_client.post(
             f"/v1/agents/{_uid(agent_id)}/remember",
             json=body,
+            timeout=REMEMBER_TIMEOUT_SECONDS,
         )
+        self._raise_for_store(resp)
+        return resp.json()
+
+    async def store_status(self, store_id: UUID | str) -> dict:
+        """Status of a store, with the atoms it created or merged into."""
+        resp = await self._agent_client.get(f"/v1/stores/{_uid(store_id)}/status")
+        self._raise_for_status(resp)
+        return resp.json()
+
+    async def retry_store(self, store_id: UUID | str) -> RememberResult:
+        """Re-run a failed store from its kept source text."""
+        resp = await self._agent_client.post(
+            f"/v1/stores/{_uid(store_id)}/retry", timeout=REMEMBER_TIMEOUT_SECONDS,
+        )
+        self._raise_for_store(resp)
+        return resp.json()
+
+    async def whoami(self) -> dict:
+        """GET /v1/agents/me — the agent this key belongs to (id, name, address)."""
+        resp = await self._agent_client.get("/v1/agents/me")
+        self._raise_for_status(resp)
+        return resp.json()
+
+    async def recent(
+        self,
+        agent_id: UUID | str,
+        limit: int = 20,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        atom_types: Optional[list[str]] = None,
+        domain_tags: Optional[list[str]] = None,
+        order_by: str = "stored",
+        include_superseded: bool = False,
+    ) -> dict:
+        """Newest memories first (order_by "stored" or "event"); no search."""
+        body: dict = {"limit": limit, "order_by": order_by, "include_superseded": include_superseded}
+        for key, value in (("since", since), ("until", until),
+                           ("atom_types", atom_types), ("domain_tags", domain_tags)):
+            if value is not None:
+                body[key] = value
+        resp = await self._agent_client.post(f"/v1/agents/{_uid(agent_id)}/recent", json=body)
         self._raise_for_status(resp)
         return resp.json()
 
@@ -222,8 +327,15 @@ class MnemoClient:
         similarity_drop_threshold: Optional[float] = None,
         verbosity: Optional[str] = None,
         max_total_tokens: Optional[int] = None,
+        since: Optional[str] = None,
+        until: Optional[str] = None,
+        atom_types: Optional[list[str]] = None,
+        max_content_chars: Optional[int] = None,
     ) -> RecallResult:
-        """Retrieve relevant memories by semantic search."""
+        """Retrieve relevant memories by semantic search.
+
+        since/until filter on when the memory happened (or was stored);
+        atom_types restricts to episodic/semantic/procedural."""
         body: dict = {
             "query": query,
             "domain_tags": domain_tags,
@@ -240,6 +352,10 @@ class MnemoClient:
             body["verbosity"] = verbosity
         if max_total_tokens is not None:
             body["max_total_tokens"] = max_total_tokens
+        for key, value in (("since", since), ("until", until), ("atom_types", atom_types),
+                           ("max_content_chars", max_content_chars)):
+            if value is not None:
+                body[key] = value
         resp = await self._agent_client.post(
             f"/v1/agents/{_uid(agent_id)}/recall",
             json=body,
