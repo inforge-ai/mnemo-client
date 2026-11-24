@@ -251,6 +251,7 @@ class MnemoClient:
         channel: Optional[str] = None,
         origin_class: Optional[str] = None,
         wait: bool = True,
+        resolves: Optional[list[str]] = None,
     ) -> RememberResult:
         """Store a memory. Just say what happened. Server decomposes and links.
 
@@ -261,7 +262,7 @@ class MnemoClient:
         body: dict = {"text": text, "domain_tags": domain_tags or [], "wait": wait}
         for key, value in (("remembered_on", remembered_on), ("speaker", speaker),
                            ("addressee", addressee), ("channel", channel),
-                           ("origin_class", origin_class)):
+                           ("origin_class", origin_class), ("resolves", resolves)):
             if value is not None:
                 body[key] = value
         resp = await self._agent_client.post(
@@ -271,6 +272,44 @@ class MnemoClient:
         )
         self._raise_for_store(resp)
         return resp.json()
+
+    async def supersede(
+        self,
+        agent_id: UUID | str,
+        atom_id: UUID | str,
+        reason: str,
+        by_atom_id: Optional[UUID | str] = None,
+        text: Optional[str] = None,
+    ) -> dict:
+        """Mark atom_id as replaced, by an existing atom or by a new memory (text).
+        Server v2 Phase 2. Raises httpx.HTTPStatusError on 409/422."""
+        body: dict = {"reason": reason}
+        if by_atom_id is not None:
+            body["by_atom_id"] = str(by_atom_id)
+        if text is not None:
+            body["text"] = text
+        resp = await self._agent_client.post(
+            f"/v1/agents/{_uid(agent_id)}/atoms/{atom_id}/supersede", json=body,
+            timeout=REMEMBER_TIMEOUT_SECONDS,
+        )
+        self._raise_for_status(resp)
+        return resp.json()
+
+    async def undo_relation(self, edge_id: UUID | str, reason: Optional[str] = None) -> dict:
+        """Reverse a `replaces` or `same` relation (server v2 Phase 2)."""
+        resp = await self._agent_client.post(f"/v1/edges/{edge_id}/undo",
+                                             json={"reason": reason} if reason else {})
+        self._raise_for_status(resp)
+        return resp.json()
+
+    async def conflicts(self, agent_id: UUID | str, open: bool = True, limit: int = 20) -> list[dict]:
+        """Open (or all) conflicts, most in need of attention first (server v2 Phase 2)."""
+        resp = await self._agent_client.get(
+            f"/v1/agents/{_uid(agent_id)}/conflicts",
+            params={"open": "true" if open else "false", "limit": limit},
+        )
+        self._raise_for_status(resp)
+        return resp.json()["conflicts"]
 
     async def store_status(self, store_id: UUID | str) -> dict:
         """Status of a store, with the atoms it created or merged into."""

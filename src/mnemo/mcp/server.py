@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from importlib.metadata import version as _pkg_version
 from uuid import UUID
 
+import httpx
 from mcp.server.mcpserver import MCPServer
 
 from mnemo.client import (
@@ -171,6 +172,10 @@ INSTRUCTIONS = (
     "mnemo_recent lists the newest memories without searching; "
     "mnemo_forget deletes one memory by atom id; "
     "mnemo_store_status checks or retries a store. "
+    "When a new memory replaces an older one, mnemo may hide the old one; mnemo_undo_relation reverses that, "
+    "and mnemo_supersede marks a memory as replaced yourself. "
+    "Two memories that disagree stay visible as a conflict: mnemo_conflicts lists them, and a new memory "
+    "stored with resolves=[atom_a, atom_b] settles one without hiding either. "
     "mnemo_share shares memories with other agents, "
     "mnemo_list_shared shows what's been shared with you (or direction='outbound' for your shares), "
     "mnemo_recall_shared searches shared memories, "
@@ -207,9 +212,31 @@ def _atom_line(atom: dict, extra: str = "") -> str:
     date = _date(atom.get("remembered_on"))
     if date:
         tag = f"{tag} {date}"
+    if atom.get("kind") and atom["kind"] != "unknown":
+        tag = f"{tag}, {atom['kind']}"
+    if atom.get("status") in ("superseded", "merged"):
+        hb = atom.get("hidden_by") or {}
+        by = f" by {hb['by_atom_id']}" if hb.get("by_atom_id") else ""
+        edge = f", undo edge {hb['edge_id']}" if hb.get("edge_id") else ""
+        tag = f"{tag}, {atom['status']}{by}{edge}"
+    if atom.get("match_type") == "conflict_partner":
+        tag = f"{tag}, conflicts with {atom.get('via')}"
+    elif atom.get("conflict_id"):
+        tag = f"{tag}, in conflict {atom['conflict_id']}"
     if extra:
         tag = f"{tag}, {extra}"
     return f"- {atom.get('id', '?')} [{tag}] {atom.get('text_content', '')}"
+
+
+def _relation_lines(atom: dict) -> list[str]:
+    out = []
+    for r in atom.get("relations") or []:
+        if r.get("mode") == "shadow":
+            continue                       # shadow decisions are recorded, not acted on
+        edge = f" (undo: mnemo_undo_relation(edge_id=\"{r['edge_id']}\"))" if r.get("edge_id") and \
+            r["relation"] in ("replaces", "same") else ""
+        out.append(f"    {r['relation']} {r['target_atom_id']}{edge}")
+    return out
 
 
 def _format_store(result: dict) -> str:
@@ -224,6 +251,9 @@ def _format_store(result: dict) -> str:
         if atom.get("flags"):
             line += "  ⚑ " + ", ".join(atom["flags"])
         lines.append(line)
+        lines.extend(_relation_lines(atom))
+    if result.get("relations_pending"):
+        lines.append(f"(note: relations still being decided for {len(result['relations_pending'])} atom(s))")
     for warning in result.get("warnings") or []:
         lines.append(f"(note: {warning})")
     return "\n".join(lines)
@@ -246,6 +276,7 @@ async def mnemo_remember(
     addressee: str | None = None,
     channel: str | None = None,
     origin_class: str = "unspecified",
+    resolves: list[str] | None = None,
 ) -> str:
     """
     Args:
@@ -261,7 +292,11 @@ async def mnemo_remember(
         channel: Where it came from (e.g. "zulip #ops", "email").
         origin_class: user_stated | professional | measurement | document |
             agent_inference | unspecified.
+        resolves: Optional. Two atom ids of an open conflict (from
+            mnemo_conflicts) that this memory settles. Neither is hidden.
     """
+    if resolves is not None and len(resolves) != 2:
+        return "Error: resolves takes exactly two atom ids (an open conflict from mnemo_conflicts)"
     if origin_class not in ORIGIN_CLASSES:
         return f"Error: origin_class must be one of: {', '.join(ORIGIN_CLASSES)}"
     try:
@@ -281,6 +316,7 @@ async def mnemo_remember(
             addressee=addressee,
             channel=channel,
             origin_class=origin_class,
+            **({"resolves": resolves} if resolves else {}),
         )
     except MnemoStoreFailedError as exc:
         return _format_store_failed(exc)
@@ -517,6 +553,158 @@ async def mnemo_forget(
         logger.exception("mnemo_forget failed")
         return "Error: an unexpected error occurred (check server logs for details)"
     return f"Forgot memory {atom_uuid}."
+
+
+def _uuid_or_error(value: str, what: str) -> tuple[UUID | None, str | None]:
+    try:
+        return UUID(value.strip()), None
+    except (ValueError, AttributeError):
+        return None, f"Error: invalid {what} {value!r} (expected a UUID)"
+
+
+def _http_error(exc: Exception) -> str | None:
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code in (409, 422):
+        try:
+            detail = exc.response.json().get("detail")
+        except ValueError:
+            detail = None
+        return f"Error: {detail or exc.response.status_code}"
+    return None
+
+
+@mcp_server.tool(
+    description=(
+        "Mark one of your memories as replaced: by an existing memory (by_atom_id) "
+        "or by a new one (text, stored now). The old memory is hidden from recall "
+        "and can be brought back with mnemo_undo_relation."
+    ),
+)
+async def mnemo_supersede(
+    atom_id: str,
+    reason: str,
+    by_atom_id: str | None = None,
+    text: str | None = None,
+    agent_id: str | None = None,
+) -> str:
+    """
+    Args:
+        atom_id: The memory that is out of date.
+        reason: Why it is replaced (kept with the relation).
+        by_atom_id: The memory that replaces it. Give this or text.
+        text: A new memory to store as its replacement. Give this or by_atom_id.
+        agent_id: Optional. UUID, name or address; defaults to this key's agent.
+    """
+    if (by_atom_id is None) == (text is None):
+        return "Error: give exactly one of by_atom_id or text"
+    old, err = _uuid_or_error(atom_id, "atom_id")
+    if err:
+        return err
+    if by_atom_id is not None:
+        _, err = _uuid_or_error(by_atom_id, "by_atom_id")
+        if err:
+            return err
+    try:
+        agent_ref = await _resolve_agent(agent_id)
+    except ValueError as exc:
+        return f"Error: {exc}"
+    client = _get_client()
+    try:
+        out = await client.supersede(agent_id=agent_ref, atom_id=old, reason=reason,
+                                     by_atom_id=by_atom_id, text=text)
+    except MnemoNotFoundError:
+        return f"Error: memory {old} not found for agent {_agent_label(agent_id)}"
+    except MnemoAuthError:
+        return _not_owned(agent_id)
+    except ConnectionError:
+        return "Error: cannot reach Mnemo server"
+    except Exception as exc:
+        msg = _http_error(exc)
+        if msg:
+            return msg
+        logger.exception("mnemo_supersede failed")
+        return "Error: an unexpected error occurred (check server logs for details)"
+    return (f"Memory {out['old_atom_id']} is now superseded by {out['by_atom_id']}. "
+            f"Undo with mnemo_undo_relation(edge_id=\"{out['edge_id']}\").")
+
+
+@mcp_server.tool(
+    description=(
+        "Undo a relation that hid a memory (replaces or same), by its edge id "
+        "from mnemo_remember, mnemo_recall or mnemo_supersede output. The hidden "
+        "memory comes back."
+    ),
+)
+async def mnemo_undo_relation(edge_id: str, reason: str | None = None) -> str:
+    """
+    Args:
+        edge_id: The relation's edge id.
+        reason: Optional note on why.
+    """
+    eid, err = _uuid_or_error(edge_id, "edge_id")
+    if err:
+        return err
+    client = _get_client()
+    try:
+        out = await client.undo_relation(eid, reason=reason)
+    except MnemoNotFoundError:
+        return f"Error: relation {eid} not found"
+    except MnemoAuthError:
+        return f"Error: relation {eid} is not accessible with this key"
+    except ConnectionError:
+        return "Error: cannot reach Mnemo server"
+    except Exception as exc:
+        msg = _http_error(exc)
+        if msg:
+            return msg
+        logger.exception("mnemo_undo_relation failed")
+        return "Error: an unexpected error occurred (check server logs for details)"
+    return f"Undid {out['undone']}: memory {out['restored_atom_id']} is active again."
+
+
+@mcp_server.tool(
+    description=(
+        "List memories that disagree with each other (open conflicts), most in "
+        "need of attention first. Settle one by storing a memory with "
+        "resolves=[atom_a, atom_b]; neither side is hidden."
+    ),
+)
+async def mnemo_conflicts(open: bool = True, limit: int = 20, agent_id: str | None = None) -> str:
+    """
+    Args:
+        open: Only open conflicts (default) or all.
+        limit: At most this many (1-100).
+        agent_id: Optional. UUID, name or address; defaults to this key's agent.
+    """
+    try:
+        agent_ref = await _resolve_agent(agent_id)
+    except ValueError as exc:
+        return f"Error: {exc}"
+    client = _get_client()
+    try:
+        rows = await client.conflicts(agent_ref, open=open, limit=max(1, min(100, limit)))
+    except MnemoNotFoundError:
+        return _not_found(agent_id)
+    except MnemoAuthError:
+        return _not_owned(agent_id)
+    except ConnectionError:
+        return "Error: cannot reach Mnemo server"
+    except Exception:
+        logger.exception("mnemo_conflicts failed")
+        return "Error: an unexpected error occurred (check server logs for details)"
+    if not rows:
+        return "No open conflicts." if open else "No conflicts."
+    lines = []
+    for c in rows:
+        state = "resolved" if c.get("resolved_at") else "open"
+        origins = ", different origins" if c.get("origins_differ") else ""
+        lines.append(f"Conflict {c['id']} ({state}{origins}):")
+        for a in c["atoms"]:
+            lines.append(f"  - {a['id']} [{a.get('kind') or 'unknown'}, {a['origin_class']}, "
+                         f"confidence {a['confidence_expected']:.2f}] {a['text_content']}")
+        if state == "open":
+            ids = ", ".join(f'"{a["id"]}"' for a in c["atoms"])
+            lines.append(f"  settle with mnemo_remember(text=..., resolves=[{ids}])")
+    return "\n".join(lines)
 
 
 @mcp_server.tool(
