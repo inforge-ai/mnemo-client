@@ -119,7 +119,7 @@ Add to your Claude Desktop configuration (`claude_desktop_config.json`):
 
 ### MCP tools
 
-The server exposes 10 tools:
+The server exposes 13 tools:
 
 | Tool | What it does |
 |---|---|
@@ -128,12 +128,17 @@ The server exposes 10 tools:
 | `mnemo_recent` | Newest memories without searching; `order_by="stored"` (default) or `"event"`. |
 | `mnemo_forget` | Delete one memory by atom id (audited as deleted by the agent). |
 | `mnemo_store_status` | Status and atoms of a store; `retry=True` re-runs a failed store. |
+| `mnemo_supersede` | Mark a memory as replaced, by an existing memory (`by_atom_id`) or a new one (`text`). The old memory is hidden from recall; the reply gives the edge id to undo it. |
+| `mnemo_undo_relation` | Undo a relation that hid a memory (`replaces` or `same`) by its edge id; the memory comes back. |
+| `mnemo_conflicts` | Memories that disagree with each other, most in need of attention first. Settle one with `mnemo_remember(..., resolves=[atom_a, atom_b])`; neither side is hidden. |
 | `mnemo_stats` | Memory statistics. |
 | `mnemo_share`, `mnemo_list_shared`, `mnemo_recall_shared`, `mnemo_revoke_share` | Sharing (unchanged). |
 
 `agent_id` is optional on every tool and accepts a UUID, an agent name (`clio`) or an address (`clio:tom.inforge`). Every line of remember, recall and recent output starts with the full atom id, so `mnemo_forget` can act on it.
 
 Requires a mnemo server with v2 Phase 1 (`/v1/agents/me`, synchronous remember). Against an older server, `mnemo_remember` reports "queued".
+
+With a v2 Phase 2 server, `mnemo_remember` also lists the relations decided for each new memory (`replaces`, `same`, `refines`, `conflict`, `review`), with the edge id to undo a hide. Recall marks a hidden memory (when hidden memories are requested) and a memory's conflict partner. `mnemo_supersede`, `mnemo_undo_relation` and `mnemo_conflicts` need a Phase 2 server.
 
 `mnemo_list_shared` displays a `[trusted]` or `[UNTRUSTED]` label per view based on the server's trust auth layer. Trust is managed by operators via the server CLI, not through MCP tools.
 
@@ -163,8 +168,11 @@ At least one of `agent_key` or `operator_key` is required.
 
 | Method | Description |
 |---|---|
-| `remember(agent_id, text, domain_tags=None, remembered_on=None, speaker=None, addressee=None, channel=None, origin_class=None, wait=True)` | Store a memory. The server decomposes it into typed atoms and links them, and (with `wait=True`) returns them. `remembered_on` accepts an ISO-8601 datetime to anchor relative time references. Raises `MnemoStoreFailedError` if decomposition fails (the text is kept). Returns `RememberResult`. 120 s timeout. |
+| `remember(agent_id, text, domain_tags=None, remembered_on=None, speaker=None, addressee=None, channel=None, origin_class=None, wait=True, resolves=None)` | Store a memory. The server decomposes it into typed atoms and links them, and (with `wait=True`) returns them. `remembered_on` accepts an ISO-8601 datetime to anchor relative time references. Raises `MnemoStoreFailedError` if decomposition fails (the text is kept). Returns `RememberResult`. 120 s timeout. |
 | `store_status(store_id)` / `retry_store(store_id)` | Status and atoms of a store; re-run a failed store. |
+| `supersede(agent_id, atom_id, reason, by_atom_id=None, text=None)` | Mark a memory as replaced (server v2 Phase 2). |
+| `undo_relation(edge_id, reason=None)` | Reverse a `replaces` or `same` (server v2 Phase 2). |
+| `conflicts(agent_id, open=True, limit=20)` | Open (or all) conflicts (server v2 Phase 2). |
 | `recent(agent_id, limit=20, since=None, until=None, atom_types=None, domain_tags=None, order_by="stored")` | Newest memories without searching. |
 | `whoami()` | The agent the key belongs to (`id`, `name`, `address`, `status`). |
 | `recall(agent_id, query, ..., since=None, until=None, atom_types=None, max_content_chars=None)` | Semantic search over stored memories. Returns `RecallResult`. |
